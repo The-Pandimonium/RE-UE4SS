@@ -57,6 +57,7 @@
 #include <Unreal/UnrealInitializer.hpp>
 #include <Unreal/World.hpp>
 #include <Unreal/FWorldContext.hpp>
+#include <BlueprintAPI.hpp>
 #include <Unreal/Engine/UDataTable.hpp>
 #include <Unreal/BitfieldProxy.hpp>
 #include <Unreal/FOutputDevice.hpp>
@@ -404,6 +405,7 @@ namespace RC
             }
 
             fire_unreal_init_for_cpp_mods();
+            BlueprintAPI::Initialize();
             setup_unreal_properties();
             UAssetRegistry::SetMaxMemoryUsageDuringAssetLoading(settings_manager.Memory.MaxMemoryUsageDuringAssetLoading);
 

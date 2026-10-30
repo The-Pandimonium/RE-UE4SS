@@ -1,0 +1,1119 @@
+#include <BlueprintStubGenerator.hpp>
+
+#include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include <DynamicOutput/DynamicOutput.hpp>
+#include <Unreal/CoreUObject/UObject/Class.hpp>
+#define RC_UNREAL_DISABLE_PROPERTY_DEPRECATION_WARNINGS
+#include <Unreal/CoreUObject/UObject/UnrealType.hpp>
+#include <Unreal/Property/FEnumProperty.hpp>
+#include <Unreal/Property/FStructProperty.hpp>
+#include <Unreal/FText.hpp>
+#include <Unreal/UKismetNodeHelperLibrary.hpp>
+#include <Unreal/UObject.hpp>
+#include <Unreal/UObjectGlobals.hpp>
+#include <Unreal/UnrealFlags.hpp>
+
+namespace RC::BlueprintStubGenerator
+{
+    using namespace RC::Unreal;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // UTF-8 helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    static std::string to_utf8(const StringType& ws)
+    {
+        std::string out;
+        for (wchar_t c : ws)
+        {
+            uint32_t cp = static_cast<uint32_t>(c);
+            if (cp < 0x80)
+            {
+                out += static_cast<char>(cp);
+            }
+            else if (cp < 0x800)
+            {
+                out += static_cast<char>(0xC0 | (cp >> 6));
+                out += static_cast<char>(0x80 | (cp & 0x3F));
+            }
+            else
+            {
+                out += static_cast<char>(0xE0 | (cp >> 12));
+                out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                out += static_cast<char>(0x80 | (cp & 0x3F));
+            }
+        }
+        return out;
+    }
+
+    // JSON-escape a UTF-8 string and wrap in double quotes.
+    static std::string jstr(const std::string& s)
+    {
+        std::string out = "\"";
+        for (unsigned char c : s)
+        {
+            if (c == '"')       out += "\\\"";
+            else if (c == '\\') out += "\\\\";
+            else if (c == '\n') out += "\\n";
+            else if (c == '\r') out += "\\r";
+            else if (c == '\t') out += "\\t";
+            else if (c < 0x20)  { char buf[8]; snprintf(buf, sizeof(buf), "\\u%04X", c); out += buf; }
+            else                out += static_cast<char>(c);
+        }
+        out += '"';
+        return out;
+    }
+
+    static std::string jstr(const StringType& ws) { return jstr(to_utf8(ws)); }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Predicate helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    static bool IsUnderGame(UObject* obj)
+    {
+        if (!obj) return false;
+        UObject* pkg = obj->GetOutermost();
+        if (!pkg) return false;
+        return pkg->GetName().find(STR("/Game/")) != StringType::npos;
+    }
+
+    static bool IsUserMadeClass(UStruct* s)
+    {
+        if (!s) return false;
+        const StringType name = s->GetName();
+        if (name.size() >= 2 && name.back() == L'C' && name[name.size() - 2] == L'_')
+            return true;
+        return IsUnderGame(s);
+    }
+
+    static bool IsFunctionLibrary(UClass* cls)
+    {
+        for (UStruct* s = cls->GetSuperStruct(); s; s = s->GetSuperStruct())
+        {
+            if (s->GetName() == STR("BlueprintFunctionLibrary"))
+                return true;
+        }
+        return false;
+    }
+
+    // Returns true if cls inherits from a class with the given short name.
+    static bool IsChildOfName(UClass* cls, const StringType& targetName)
+    {
+        for (UStruct* s = cls; s; s = s->GetSuperStruct())
+            if (s->GetName() == targetName) return true;
+        return false;
+    }
+
+    // Returns true if 'name' is a compiler/engine-generated internal name that
+    // should not appear in the stub API.
+    static bool IsGeneratedName(const StringType& name)
+    {
+        // 1. Contains a double-underscore → timeline callbacks, generated helpers, etc.
+        //    e.g. "tin_close__FinishedFunc", "tin_close__UpdateFunc"
+        if (name.find(STR("__")) != StringType::npos)
+            return true;
+
+        // 2. Ends with _<32 uppercase hex chars> → anim-notify events bound to a
+        //    specific montage slot GUID, e.g. "OnCompleted_5D8C5DEB45CD068AED6A49A9D34D2E25"
+        if (name.size() > 33)
+        {
+            const size_t hashStart = name.size() - 32;
+            if (name[hashStart - 1] == L'_')
+            {
+                bool allHex = true;
+                for (size_t i = hashStart; i < name.size(); ++i)
+                {
+                    wchar_t c = name[i];
+                    if (!((c >= L'0' && c <= L'9') ||
+                          (c >= L'A' && c <= L'F') ||
+                          (c >= L'a' && c <= L'f')))
+                    { allHex = false; break; }
+                }
+                if (allHex) return true;
+            }
+        }
+
+        // 3. Input-action event nodes generated by the K2 compiler
+        //    e.g. "InpActEvt_hotbar_1_K2Node_InputActionEvent_43"
+        if (name.find(STR("InpActEvt_")) != StringType::npos)
+            return true;
+        if (name.find(STR("K2Node_")) != StringType::npos)
+            return true;
+
+        return false;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Property → JSON type object  {"cat":..,"sub":..,"obj":..,"arr":..}
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Returns the user-facing friendly name for an enum entry.
+    // Uses the same engine call as LiveView's FriendlyName column.
+    // Falls back to the short FName if the engine call returns nothing.
+    static std::string GetEnumEntryDisplayName(UEnum* ue, const FName& rawName, int64_t value)
+    {
+        if (ue)
+        {
+            StringType friendly = UKismetNodeHelperLibrary::GetEnumeratorUserFriendlyName(
+                ue, static_cast<uint8>(value));
+            if (!friendly.empty())
+                return to_utf8(friendly);
+        }
+
+        // Strip "EnumName::" namespace prefix and return the short name
+        std::string name = to_utf8(rawName.ToString());
+        auto colonPos = name.rfind("::");
+        if (colonPos != std::string::npos)
+            name = name.substr(colonPos + 2);
+        return name;
+    }
+
+    static std::string PropTypeJson(FProperty* prop,
+                                    const std::string& container = "single");
+
+    // container: "single" | "array" | "set" | "map"
+    // Also emits legacy "arr" field for backward-compat with FStubGenerator.
+    static std::string MakeTypeJson(const std::string& cat,
+                                    const std::string& sub,
+                                    const std::string& obj,
+                                    const std::string& container,
+                                    const std::string& mapValueCat = "",
+                                    const std::string& mapValueObj = "")
+    {
+        std::string out = std::string("{\"cat\":") + jstr(cat) +
+               ",\"sub\":"       + jstr(sub) +
+               ",\"obj\":"       + jstr(obj) +
+               ",\"arr\":"       + (container == "array" ? "true" : "false") +
+               ",\"container\":" + jstr(container);
+        if (container == "map")
+        {
+            out += ",\"mapValueCat\":" + jstr(mapValueCat);
+            out += ",\"mapValueObj\":" + jstr(mapValueObj);
+        }
+        out += "}";
+        return out;
+    }
+
+    static std::string ObjPath(UObject* obj, const StringType& name)
+    {
+        if (!obj) return to_utf8(name);
+        std::string pkg = to_utf8(obj->GetOutermost()
+                                  ? obj->GetOutermost()->GetName()
+                                  : STR(""));
+        return pkg + "." + to_utf8(name);
+    }
+
+    // Build type JSON for a single scalar element (used for array/set/map inner types too).
+    static std::string ScalarTypeJson(FProperty* prop, const std::string& container)
+    {
+        if (!prop) return MakeTypeJson("object", "", "", container);
+        const StringType cn = prop->GetClass().GetFName().ToString();
+
+        if (cn == STR("BoolProperty"))   return MakeTypeJson("bool",   "", "", container);
+        if (cn == STR("FloatProperty") ||
+            cn == STR("DoubleProperty")) return MakeTypeJson("float",  "", "", container);
+        if (cn == STR("IntProperty")   ||
+            cn == STR("Int16Property") ||
+            cn == STR("Int8Property"))   return MakeTypeJson("int",    "", "", container);
+        if (cn == STR("Int64Property") ||
+            cn == STR("UInt64Property")) return MakeTypeJson("int64",  "", "", container);
+        if (cn == STR("UInt16Property")||
+            cn == STR("UInt32Property")) return MakeTypeJson("int",    "", "", container);
+        if (cn == STR("StrProperty"))    return MakeTypeJson("string", "", "", container);
+        if (cn == STR("NameProperty"))   return MakeTypeJson("name",   "", "", container);
+        if (cn == STR("TextProperty"))   return MakeTypeJson("text",   "", "", container);
+
+        if (cn == STR("ByteProperty"))
+        {
+            UEnum* e = static_cast<FByteProperty*>(prop)->GetEnum();
+            std::string obj = e ? ObjPath(e->GetOutermost(), e->GetName()) : "";
+            return MakeTypeJson("byte", "", obj, container);
+        }
+        if (cn == STR("EnumProperty"))
+        {
+            UEnum* e = static_cast<FEnumProperty*>(prop)->GetEnum();
+            std::string obj = e ? ObjPath(e->GetOutermost(), e->GetName()) : "";
+            return MakeTypeJson("byte", "", obj, container);
+        }
+        if (cn == STR("ObjectProperty")     ||
+            cn == STR("WeakObjectProperty") ||
+            cn == STR("LazyObjectProperty") ||
+            cn == STR("SoftObjectProperty"))
+        {
+            auto* op = static_cast<FObjectPropertyBase*>(prop);
+            UClass* c = op->GetPropertyClass();
+            std::string obj = c ? ObjPath(c->GetOutermost(), c->GetName()) : "";
+            std::string cat = (cn == STR("SoftObjectProperty")) ? "softobject" : "object";
+            return MakeTypeJson(cat, "", obj, container);
+        }
+        if (cn == STR("ClassProperty"))
+        {
+            UClass* meta = static_cast<FClassProperty*>(prop)->GetMetaClass();
+            std::string obj = meta ? ObjPath(meta->GetOutermost(), meta->GetName()) : "";
+            std::string sub = meta ? to_utf8(meta->GetName()) : "";
+            return MakeTypeJson("class", sub, obj, container);
+        }
+        if (cn == STR("SoftClassProperty"))
+        {
+            UClass* meta = static_cast<FSoftClassProperty*>(prop)->GetMetaClass();
+            std::string obj = meta ? ObjPath(meta->GetOutermost(), meta->GetName()) : "";
+            std::string sub = meta ? to_utf8(meta->GetName()) : "";
+            return MakeTypeJson("softclass", sub, obj, container);
+        }
+        if (cn == STR("StructProperty"))
+        {
+            auto* sp = static_cast<FStructProperty*>(prop);
+            UScriptStruct* s = sp->GetStruct();
+            std::string obj = s ? ObjPath(s->GetOutermost(), s->GetName()) : "";
+            std::string sub = s ? to_utf8(s->GetName()) : "";
+            return MakeTypeJson("struct", sub, obj, container);
+        }
+        return MakeTypeJson("object", "", "", container);
+    }
+
+    static std::string PropTypeJson(FProperty* prop, const std::string& container)
+    {
+        if (!prop) return MakeTypeJson("object", "", "", container);
+        const StringType cn = prop->GetClass().GetFName().ToString();
+
+        // Array — recurse on inner element type
+        if (cn == STR("ArrayProperty"))
+        {
+            FProperty* inner = static_cast<FArrayProperty*>(prop)->GetInner();
+            return inner ? ScalarTypeJson(inner, "array")
+                         : MakeTypeJson("object", "", "", "array");
+        }
+
+        // Set — element type with "set" container
+        if (cn == STR("SetProperty"))
+        {
+            FProperty* elem = static_cast<FSetProperty*>(prop)->GetElementProp();
+            return elem ? ScalarTypeJson(elem, "set")
+                        : MakeTypeJson("object", "", "", "set");
+        }
+
+        // Map — key type becomes the main type; value type goes into mapValueCat/Obj
+        if (cn == STR("MapProperty"))
+        {
+            auto* mp  = static_cast<FMapProperty*>(prop);
+            FProperty* keyProp = mp->GetKeyProp();
+            FProperty* valProp = mp->GetValueProp();
+
+            // Derive cat/obj for value type
+            std::string valCat, valObj;
+            if (valProp)
+            {
+                const StringType vcn = valProp->GetClass().GetFName().ToString();
+                if (vcn == STR("ObjectProperty")     || vcn == STR("WeakObjectProperty") ||
+                    vcn == STR("LazyObjectProperty") || vcn == STR("SoftObjectProperty"))
+                {
+                    valCat = (vcn == STR("SoftObjectProperty")) ? "softobject" : "object";
+                    UClass* vc = static_cast<FObjectPropertyBase*>(valProp)->GetPropertyClass();
+                    valObj = vc ? ObjPath(vc->GetOutermost(), vc->GetName()) : "";
+                }
+                else if (vcn == STR("StructProperty"))
+                {
+                    valCat = "struct";
+                    UScriptStruct* vs = static_cast<FStructProperty*>(valProp)->GetStruct();
+                    valObj = vs ? ObjPath(vs->GetOutermost(), vs->GetName()) : "";
+                }
+                else if (vcn == STR("BoolProperty"))                          valCat = "bool";
+                else if (vcn == STR("FloatProperty") ||
+                         vcn == STR("DoubleProperty"))                        valCat = "float";
+                else if (vcn == STR("IntProperty")   || vcn == STR("Int16Property") ||
+                         vcn == STR("Int8Property"))                          valCat = "int";
+                else if (vcn == STR("StrProperty"))                           valCat = "string";
+                else if (vcn == STR("NameProperty"))                          valCat = "name";
+                else if (vcn == STR("ByteProperty") || vcn == STR("EnumProperty")) valCat = "byte";
+                else                                                          valCat = "object";
+            }
+
+            // Key type is the "main" type, tagged as map container
+            // MakeTypeJson with container=="map" already appends mapValueCat/Obj
+            if (!keyProp) return MakeTypeJson("object", "", "", "map", valCat, valObj);
+
+            const StringType kcn = keyProp->GetClass().GetFName().ToString();
+            std::string kcat, ksub, kobj;
+            if (kcn == STR("StrProperty"))  kcat = "string";
+            else if (kcn == STR("NameProperty")) kcat = "name";
+            else if (kcn == STR("IntProperty") || kcn == STR("Int16Property") ||
+                     kcn == STR("Int8Property"))  kcat = "int";
+            else if (kcn == STR("BoolProperty"))  kcat = "bool";
+            else if (kcn == STR("ObjectProperty"))
+            {
+                kcat = "object";
+                UClass* kc = static_cast<FObjectPropertyBase*>(keyProp)->GetPropertyClass();
+                kobj = kc ? ObjPath(kc->GetOutermost(), kc->GetName()) : "";
+            }
+            else if (kcn == STR("StructProperty"))
+            {
+                kcat = "struct";
+                UScriptStruct* ks = static_cast<FStructProperty*>(keyProp)->GetStruct();
+                kobj = ks ? ObjPath(ks->GetOutermost(), ks->GetName()) : "";
+            }
+            else kcat = "object";
+
+            return MakeTypeJson(kcat, ksub, kobj, "map", valCat, valObj);
+        }
+
+        return ScalarTypeJson(prop, container);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Data model
+    // ─────────────────────────────────────────────────────────────────────────
+
+    struct ParamData  { std::string name; std::string typeJson; };
+    struct FuncData
+    {
+        std::string name;
+        std::vector<ParamData> inputs;
+        std::vector<ParamData> outputs; // CPF_OutParm + CPF_ReturnParm
+        bool isStatic = false;
+        bool isPure   = false;
+    };
+    // Event dispatcher (Blueprint multicast delegate) — inputs only, no outputs.
+    struct DelegateData
+    {
+        std::string name;
+        std::vector<ParamData> inputs;
+    };
+    struct VarData
+    {
+        std::string name;
+        std::string typeJson;
+        std::string defaultValue;   // CDO scalar value, empty when not applicable
+        bool readOnly = false;
+    };
+
+    struct ComponentData
+    {
+        std::string name;         // variable name on the class
+        std::string className;    // short class name, e.g. "SceneComponent"
+        std::string classPath;    // full path, e.g. "/Script/Engine.SceneComponent"
+        std::string attachParent; // variable name of the parent component (empty = root)
+    };
+
+    struct AssetData
+    {
+        std::string name;       // "MI_Cube"
+        std::string pkgPath;    // "/Game/Art/MI_Cube"
+        std::string assetType;  // "MaterialInstanceConstant"
+    };
+
+    struct ClassData
+    {
+        UClass*      ptr         = nullptr;
+        std::string  name;        // "BP_Enemy_C"
+        std::string  pkgPath;     // "/Game/Characters/BP_Enemy"
+        std::string  parentName;  // "Character"
+        std::string  parentPkg;   // "/Script/Engine"
+        bool         parentNative = true;
+        bool         isFnLib      = false;
+        std::vector<FuncData>      funcs;
+        std::vector<DelegateData>  delegates;
+        std::vector<VarData>       vars;
+        std::vector<ComponentData> actorComponents;
+        std::vector<ComponentData> widgetComponents;
+    };
+
+    struct FieldData  { std::string name; std::string typeJson; };
+    struct StructData
+    {
+        std::string name;
+        std::string pkgPath;
+        std::vector<FieldData> fields;
+    };
+
+    struct EnumEntryData { std::string name; int64_t value; };
+    struct EnumData
+    {
+        std::string name;
+        std::string pkgPath;
+        std::vector<EnumEntryData> entries;
+    };
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Topological sort for classes (parent before child)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    static void TopoVisit(UClass* cls,
+                          const std::unordered_map<UClass*, ClassData>& map,
+                          std::unordered_set<UClass*>& visited,
+                          std::vector<const ClassData*>& out)
+    {
+        if (visited.count(cls)) return;
+        visited.insert(cls);
+        auto it = map.find(cls);
+        if (it != map.end() && !it->second.parentNative)
+        {
+            UClass* parent = cls->GetSuperClass();
+            if (parent) TopoVisit(parent, map, visited, out);
+        }
+        if (it != map.end()) out.push_back(&it->second);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CDO scalar default-value reader
+    // Returns a UTF-8 string with the CDO value for simple scalar properties,
+    // or an empty string when the type is complex or the CDO is unavailable.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    static std::string CdoScalarDefault(FProperty* prop, UObject* cdo)
+    {
+        if (!prop || !cdo) return "";
+        const StringType cn = prop->GetClass().GetFName().ToString();
+
+        if (cn == STR("BoolProperty"))
+        {
+            auto* bp = static_cast<FBoolProperty*>(prop);
+            uint8_t* raw = bp->ContainerPtrToValuePtr<uint8_t>(cdo);
+            if (!raw) return "";
+            uint8_t byte_val = *(raw + bp->GetByteOffset());
+            bool val = !!(byte_val & bp->GetFieldMask());
+            return val ? "true" : "false";
+        }
+        if (cn == STR("IntProperty") || cn == STR("Int16Property") ||
+            cn == STR("Int8Property"))
+        {
+            int32_t val = *prop->ContainerPtrToValuePtr<int32_t>(cdo);
+            return std::to_string(val);
+        }
+        if (cn == STR("Int64Property") || cn == STR("UInt64Property"))
+        {
+            int64_t val = *prop->ContainerPtrToValuePtr<int64_t>(cdo);
+            return std::to_string(val);
+        }
+        if (cn == STR("FloatProperty"))
+        {
+            float val = *prop->ContainerPtrToValuePtr<float>(cdo);
+            char buf[64]; snprintf(buf, sizeof(buf), "%g", val);
+            return buf;
+        }
+        if (cn == STR("DoubleProperty"))
+        {
+            double val = *prop->ContainerPtrToValuePtr<double>(cdo);
+            char buf[64]; snprintf(buf, sizeof(buf), "%g", val);
+            return buf;
+        }
+        if (cn == STR("StrProperty"))
+        {
+            FString* fs = prop->ContainerPtrToValuePtr<FString>(cdo);
+            if (!fs) return "";
+            const TCHAR* raw = *(*fs);   // FString::operator*() → const TCHAR*
+            return raw ? to_utf8(StringType(raw)) : "";
+        }
+        if (cn == STR("NameProperty"))
+        {
+            FName* fn = prop->ContainerPtrToValuePtr<FName>(cdo);
+            return fn ? to_utf8(fn->ToString()) : "";
+        }
+        if (cn == STR("ByteProperty"))
+        {
+            uint8_t val = *prop->ContainerPtrToValuePtr<uint8_t>(cdo);
+            UEnum* ue = static_cast<FByteProperty*>(prop)->GetEnum();
+            if (ue)
+            {
+                std::vector<std::pair<FName, int64_t>> names;
+                ue->GetEnumNamesAsVector(names);
+                for (auto& [fname, entryVal] : names)
+                    if (entryVal == static_cast<int64_t>(val))
+                        return GetEnumEntryDisplayName(ue, fname, val);
+            }
+            return std::to_string(static_cast<int>(val));
+        }
+        if (cn == STR("EnumProperty"))
+        {
+            auto* ep = static_cast<FEnumProperty*>(prop);
+            auto* np = ep->GetUnderlyingProperty();
+            UEnum* ue = ep->GetEnum();
+            if (!np || !ue) return "";
+            int64_t val = np->GetSignedIntPropertyValue(ep->ContainerPtrToValuePtr<int64_t>(cdo));
+            std::vector<std::pair<FName, int64_t>> names;
+            ue->GetEnumNamesAsVector(names);
+            for (auto& [fname, entryVal] : names)
+                if (entryVal == val)
+                    return GetEnumEntryDisplayName(ue, fname, static_cast<int64_t>(val));
+            return std::to_string(val);
+        }
+        return "";
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Public entry point
+    // ─────────────────────────────────────────────────────────────────────────
+
+    bool Generate(const std::wstring& outputPath)
+    {
+        // ── Collect enums ─────────────────────────────────────────────────────
+        std::vector<EnumData> enums;
+        UObjectGlobals::ForEachUObject([&](UObject* obj, int32_t, int32_t)
+        {
+            auto* ue = Cast<UEnum>(obj);
+            if (!ue) return LoopAction::Continue;
+            if (!IsUnderGame(ue)) return LoopAction::Continue;
+
+            EnumData ed;
+            ed.name    = to_utf8(ue->GetName());
+            UObject* pkg = ue->GetOutermost();
+            ed.pkgPath = pkg ? to_utf8(pkg->GetName()) : "";
+
+            std::vector<std::pair<FName, int64_t>> names;
+            ue->GetEnumNamesAsVector(names);
+            for (auto& [fname, val] : names)
+            {
+                // Skip the auto-generated MAX entry (check the short name)
+                std::string shortName = to_utf8(fname.ToString());
+                auto colonPos = shortName.rfind("::");
+                if (colonPos != std::string::npos)
+                    shortName = shortName.substr(colonPos + 2);
+                if (shortName.size() >= 4 &&
+                    shortName.substr(shortName.size() - 4) == "_MAX")
+                    continue;
+
+                // Get the user-facing friendly name via the engine's KismetNodeHelperLibrary
+                std::string entry = GetEnumEntryDisplayName(ue, fname, val);
+                ed.entries.push_back({entry, val});
+            }
+
+            enums.push_back(std::move(ed));
+            return LoopAction::Continue;
+        });
+
+        // ── Collect structs ───────────────────────────────────────────────────
+        std::vector<StructData> structs;
+        UObjectGlobals::ForEachUObject([&](UObject* obj, int32_t, int32_t)
+        {
+            // UScriptStruct but NOT UClass (UClass is a subclass of UStruct)
+            auto* ss = Cast<UScriptStruct>(obj);
+            if (!ss) return LoopAction::Continue;
+            if (Cast<UClass>(obj)) return LoopAction::Continue; // skip classes
+            if (!IsUnderGame(ss)) return LoopAction::Continue;
+
+            StructData sd;
+            sd.name    = to_utf8(ss->GetName());
+            UObject* pkg = ss->GetOutermost();
+            sd.pkgPath = pkg ? to_utf8(pkg->GetName()) : "";
+
+            for (FProperty* p : TFieldRange<FProperty>(ss, EFieldIterationFlags::IncludeDeprecated))
+            {
+                if (p->HasAnyPropertyFlags(CPF_Parm)) continue;
+                FieldData fd;
+                fd.name     = to_utf8(p->GetName());
+                fd.typeJson = PropTypeJson(p);
+                sd.fields.push_back(std::move(fd));
+            }
+
+            structs.push_back(std::move(sd));
+            return LoopAction::Continue;
+        });
+
+        // ── Collect non-blueprintable assets ─────────────────────────────────
+        std::vector<AssetData> assets;
+        UObjectGlobals::ForEachUObject([&](UObject* obj, int32_t, int32_t)
+        {
+            if (!IsUnderGame(obj)) return LoopAction::Continue;
+
+            // Must be a top-level package object (direct child of the package)
+            UObject* outer = obj->GetOuterPrivate();
+            if (!outer || outer != obj->GetOutermost()) return LoopAction::Continue;
+
+            // Skip structural types — they go in their own sections
+            if (Cast<UClass>(obj) || Cast<UScriptStruct>(obj) || Cast<UEnum>(obj))
+                return LoopAction::Continue;
+
+            // Skip CDOs and generated names
+            const StringType name = obj->GetName();
+            if (name.find(STR("Default__")) == 0) return LoopAction::Continue;
+            if (IsGeneratedName(name)) return LoopAction::Continue;
+
+            // GetFullName() returns "ClassName /Package/Path.ObjectName"
+            // Parse the class name from the prefix before the first space.
+            const StringType fullName = obj->GetFullName();
+            size_t spacePos = fullName.find(STR(' '));
+            std::string assetType = spacePos != StringType::npos
+                ? to_utf8(fullName.substr(0, spacePos))
+                : "";
+
+            // Skip BP-related types that slip through the UClass/UScriptStruct/UEnum filters
+            if (assetType.find("Blueprint") != std::string::npos) return LoopAction::Continue;
+
+            AssetData ad;
+            ad.name      = to_utf8(name);
+            UObject* pkg = obj->GetOutermost();
+            ad.pkgPath   = pkg ? to_utf8(pkg->GetName()) : "";
+            ad.assetType = std::move(assetType);
+            assets.push_back(std::move(ad));
+            return LoopAction::Continue;
+        });
+
+        // ── Collect classes ───────────────────────────────────────────────────
+        std::unordered_map<UClass*, ClassData> classMap;
+        UObjectGlobals::ForEachUObject([&](UObject* obj, int32_t, int32_t)
+        {
+            auto* cls = Cast<UClass>(obj);
+            if (!cls) return LoopAction::Continue;
+            if (!IsUserMadeClass(cls)) return LoopAction::Continue;
+
+            ClassData cd;
+            cd.ptr    = cls;
+            cd.name   = to_utf8(cls->GetName());
+            UObject* pkg = cls->GetOutermost();
+            cd.pkgPath = pkg ? to_utf8(pkg->GetName()) : "";
+
+            UClass* parent = cls->GetSuperClass();
+            if (parent)
+            {
+                cd.parentName   = to_utf8(parent->GetName());
+                cd.parentNative = !IsUserMadeClass(parent);
+                UObject* pp     = parent->GetOutermost();
+                cd.parentPkg    = pp ? to_utf8(pp->GetName()) : "";
+            }
+
+            cd.isFnLib = IsFunctionLibrary(cls);
+
+            // CDO for default-value capture (may be null for abstract/temp classes)
+            UObject* cdo = cls->GetClassDefaultObject();
+
+            // Build attach-parent map from the Blueprint's SimpleConstructionScript.
+            // SCS nodes carry the component hierarchy; CDO subobject pointer reads don't
+            // work for SCS-defined components (their templates are owned by the class, not CDO).
+            std::unordered_map<std::string, std::string> attachParentMap;
+            {
+                // SimpleConstructionScript is a UPROPERTY on UBlueprintGeneratedClass itself,
+                // so iterate cls->GetClassPrivate() (the metaclass) and read from cls as container.
+                UObject* scs = nullptr;
+                for (FProperty* p : TFieldRange<FProperty>(cls->GetClassPrivate(),
+                                                            EFieldIterationFlags::Default))
+                {
+                    if (p->GetName() != STR("SimpleConstructionScript")) continue;
+                    if (p->GetClass().GetFName().ToString() != STR("ObjectProperty")) break;
+                    auto* op = static_cast<FObjectPropertyBase*>(p);
+                    scs = op->GetObjectPropertyValue(op->ContainerPtrToValuePtr<void>(cls));
+                    break;
+                }
+
+                if (scs)
+                {
+                    // Read InternalVariableName (FName) from an SCS_Node UObject
+                    auto getVarName = [](UObject* node) -> std::string
+                    {
+                        for (FProperty* p : TFieldRange<FProperty>(node->GetClassPrivate(),
+                                                                    EFieldIterationFlags::Default))
+                        {
+                            if (p->GetName() != STR("InternalVariableName")) continue;
+                            FName* fn = p->ContainerPtrToValuePtr<FName>(node);
+                            return fn ? to_utf8(fn->ToString()) : std::string{};
+                        }
+                        return {};
+                    };
+
+                    // Iterate AllNodes: for each parent node, walk its ChildNodes and
+                    // record childVarName → parentVarName.
+                    for (FProperty* p : TFieldRange<FProperty>(scs->GetClassPrivate(),
+                                                                EFieldIterationFlags::Default))
+                    {
+                        if (p->GetName() != STR("AllNodes")) continue;
+                        auto* allArr = CastField<FArrayProperty>(p);
+                        if (!allArr) break;
+                        FScriptArrayHelper_InContainer allHelper(allArr, scs);
+                        for (int32_t ni = 0; ni < allHelper.Num(); ++ni)
+                        {
+                            UObject* node = *reinterpret_cast<UObject**>(allHelper.GetRawPtr(ni));
+                            if (!node) continue;
+                            std::string parentName = getVarName(node);
+                            if (parentName.empty()) continue;
+
+                            for (FProperty* cp : TFieldRange<FProperty>(node->GetClassPrivate(),
+                                                                         EFieldIterationFlags::Default))
+                            {
+                                if (cp->GetName() != STR("ChildNodes")) continue;
+                                auto* childArr = CastField<FArrayProperty>(cp);
+                                if (!childArr) break;
+                                FScriptArrayHelper_InContainer childHelper(childArr, node);
+                                for (int32_t ci = 0; ci < childHelper.Num(); ++ci)
+                                {
+                                    UObject* child = *reinterpret_cast<UObject**>(childHelper.GetRawPtr(ci));
+                                    if (!child) continue;
+                                    std::string childName = getVarName(child);
+                                    if (!childName.empty())
+                                        attachParentMap[childName] = parentName;
+                                }
+                                break;
+                            }
+                        }
+                        break;
+                    }
+
+                    // Root nodes may name a native component via AttachToName
+                    for (FProperty* p : TFieldRange<FProperty>(scs->GetClassPrivate(),
+                                                                EFieldIterationFlags::Default))
+                    {
+                        if (p->GetName() != STR("RootNodes")) continue;
+                        auto* rootArr = CastField<FArrayProperty>(p);
+                        if (!rootArr) break;
+                        FScriptArrayHelper_InContainer rootHelper(rootArr, scs);
+                        for (int32_t ri = 0; ri < rootHelper.Num(); ++ri)
+                        {
+                            UObject* node = *reinterpret_cast<UObject**>(rootHelper.GetRawPtr(ri));
+                            if (!node) continue;
+                            std::string nodeName = getVarName(node);
+                            if (nodeName.empty() || attachParentMap.count(nodeName)) continue;
+
+                            for (FProperty* ap : TFieldRange<FProperty>(node->GetClassPrivate(),
+                                                                         EFieldIterationFlags::Default))
+                            {
+                                if (ap->GetName() != STR("AttachToName")) continue;
+                                FName* fn = ap->ContainerPtrToValuePtr<FName>(node);
+                                if (fn)
+                                {
+                                    std::string s = to_utf8(fn->ToString());
+                                    if (s != "None" && !s.empty())
+                                        attachParentMap[nodeName] = s;
+                                }
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // Functions and event dispatchers defined directly on this class.
+            // Delegate signature functions (FUNC_Delegate + name ends with
+            // "__DelegateSignature") become entries in cd.delegates; everything
+            // else becomes a regular function in cd.funcs.
+            static const StringType kDelegateSuffix = STR("__DelegateSignature");
+            for (UFunction* fn : TFieldRange<UFunction>(cls, EFieldIterationFlags::None))
+            {
+                if (fn->GetOuterPrivate() != cls) continue;
+
+                // Always skip ubergraph execution stubs
+                if (fn->HasAnyFunctionFlags(EFunctionFlags::FUNC_UbergraphFunction))
+                    continue;
+
+                const StringType fnName = fn->GetName();
+
+                if (fn->HasAnyFunctionFlags(EFunctionFlags::FUNC_Delegate))
+                {
+                    // Only emit multicast delegate signature functions.
+                    // Single-cast delegates (no "__DelegateSignature" suffix or no
+                    // matching MulticastDelegateProperty) are internal bookkeeping.
+                    if (fnName.size() <= kDelegateSuffix.size()) continue;
+                    if (fnName.compare(fnName.size() - kDelegateSuffix.size(),
+                                       kDelegateSuffix.size(), kDelegateSuffix) != 0) continue;
+
+                    StringType baseName = fnName.substr(0, fnName.size() - kDelegateSuffix.size());
+                    if (IsGeneratedName(baseName)) continue;
+
+                    // Confirm there is a matching multicast delegate property on the class
+                    // (inline, sparse, or standard) so we only export true event dispatchers.
+                    bool hasMulticast = false;
+                    for (FProperty* mp : TFieldRange<FProperty>(cls, EFieldIterationFlags::None))
+                    {
+                        if (CastField<FMulticastDelegateProperty>(mp) && mp->GetName() == baseName)
+                        { hasMulticast = true; break; }
+                    }
+                    if (!hasMulticast) continue;
+
+                    DelegateData dd;
+                    dd.name = to_utf8(baseName);
+                    for (FProperty* p : TFieldRange<FProperty>(fn, EFieldIterationFlags::IncludeDeprecated))
+                    {
+                        if (!p->HasAnyPropertyFlags(CPF_Parm)) continue;
+                        if (p->HasAnyPropertyFlags(CPF_ReturnParm)) continue;
+                        ParamData pd;
+                        pd.name     = to_utf8(p->GetName());
+                        pd.typeJson = PropTypeJson(p);
+                        dd.inputs.push_back(std::move(pd));
+                    }
+                    cd.delegates.push_back(std::move(dd));
+                    continue;
+                }
+
+                // Skip timeline callbacks, anim-notify hash events, K2 node events
+                if (IsGeneratedName(fnName))
+                    continue;
+
+                FuncData fd;
+                fd.name     = to_utf8(fnName);
+                fd.isStatic = fn->HasAnyFunctionFlags(FUNC_Static);
+                fd.isPure   = fn->HasAnyFunctionFlags(FUNC_BlueprintPure);
+
+                for (FProperty* p : TFieldRange<FProperty>(fn, EFieldIterationFlags::IncludeDeprecated))
+                {
+                    if (!p->HasAnyPropertyFlags(CPF_Parm)) continue;
+
+                    // Skip the hidden WorldContext parameter that UE4 compiler injects
+                    // into every static BFL function.  If we emit it, the stub generator
+                    // adds it as a user-defined pin alongside the auto-generated
+                    // __WorldContext pin, producing a visible __WorldContext1 collision.
+                    const StringType pname = p->GetName();
+                    if (pname.size() >= 13 &&
+                        pname.substr(0, 13) == STR("__WorldContex"))
+                        continue;
+
+                    ParamData pd;
+                    pd.name     = to_utf8(pname);
+                    pd.typeJson = PropTypeJson(p);
+
+                    if (p->HasAnyPropertyFlags(CPF_ReturnParm | CPF_OutParm))
+                        fd.outputs.push_back(std::move(pd));
+                    else
+                        fd.inputs.push_back(std::move(pd));
+                }
+
+                cd.funcs.push_back(std::move(fd));
+            }
+
+            // Member variables (non-param properties on this class)
+            for (FProperty* p : TFieldRange<FProperty>(cls, EFieldIterationFlags::IncludeDeprecated))
+            {
+                if (p->HasAnyPropertyFlags(CPF_Parm)) continue;
+
+                // Skip delegate and multicast-delegate properties (internal/generated)
+                const StringType cn = p->GetClass().GetFName().ToString();
+                if (cn == STR("DelegateProperty")          ||
+                    cn == STR("MulticastDelegateProperty") ||
+                    cn == STR("MulticastInlineDelegateProperty") ||
+                    cn == STR("MulticastSparseDelegateProperty"))
+                    continue;
+
+                // Skip generated variable names (timeline tracks, hash-suffixed, etc.)
+                if (IsGeneratedName(p->GetName()))
+                    continue;
+
+                // Detect owned component subobjects (ActorComponent or Widget subclasses)
+                if (cn == STR("ObjectProperty"))
+                {
+                    auto* op = static_cast<FObjectPropertyBase*>(p);
+                    UClass* propClass = op->GetPropertyClass();
+                    if (propClass && p->HasAnyPropertyFlags(CPF_ExportObject | CPF_InstancedReference))
+                    {
+                        UObject* cp = propClass->GetOutermost();
+                        ComponentData comp;
+                        comp.name      = to_utf8(p->GetName());
+                        comp.className = to_utf8(propClass->GetName());
+                        comp.classPath = (cp ? to_utf8(cp->GetName()) + "." : "") + comp.className;
+
+                        if (IsChildOfName(propClass, STR("ActorComponent")))
+                        {
+                            auto ait = attachParentMap.find(comp.name);
+                            if (ait != attachParentMap.end())
+                                comp.attachParent = ait->second;
+                            cd.actorComponents.push_back(std::move(comp));
+                            continue;
+                        }
+                        if (IsChildOfName(propClass, STR("Widget")))
+                        {
+                            cd.widgetComponents.push_back(std::move(comp));
+                            continue;
+                        }
+                    }
+                }
+
+                VarData vd;
+                vd.name         = to_utf8(p->GetName());
+                vd.typeJson     = PropTypeJson(p);
+                vd.readOnly     = p->HasAnyPropertyFlags(CPF_BlueprintReadOnly);
+                vd.defaultValue = CdoScalarDefault(p, cdo);
+                cd.vars.push_back(std::move(vd));
+            }
+
+            classMap.emplace(cls, std::move(cd));
+            return LoopAction::Continue;
+        });
+
+        // ── Topological sort ──────────────────────────────────────────────────
+        std::vector<const ClassData*> ordered;
+        std::unordered_set<UClass*>   visited;
+        ordered.reserve(classMap.size());
+        for (auto& [cls, cd] : classMap)
+            TopoVisit(cls, classMap, visited, ordered);
+
+        // ── Write JSON ────────────────────────────────────────────────────────
+        std::ofstream f(outputPath, std::ios::binary);
+        if (!f.is_open())
+        {
+            Output::send<LogLevel::Error>(
+                STR("[BlueprintStubGenerator] Cannot open '{}' for writing\n"),
+                outputPath.c_str());
+            return false;
+        }
+
+        // UTF-8 BOM
+        static constexpr char kBom[] = "\xEF\xBB\xBF";
+        f.write(kBom, 3);
+
+        f << "{\n\"format_version\":1,\n";
+
+        // — Enums —
+        f << "\"enums\":[\n";
+        for (size_t i = 0; i < enums.size(); ++i)
+        {
+            const auto& e = enums[i];
+            f << "  {\"name\":" << jstr(e.name)
+              << ",\"path\":" << jstr(e.pkgPath)
+              << ",\"entries\":[";
+            for (size_t j = 0; j < e.entries.size(); ++j)
+            {
+                if (j) f << ",";
+                f << "{\"name\":" << jstr(e.entries[j].name)
+                  << ",\"value\":" << e.entries[j].value << "}";
+            }
+            f << "]}";
+            if (i + 1 < enums.size()) f << ",";
+            f << "\n";
+        }
+        f << "],\n";
+
+        // — Structs —
+        f << "\"structs\":[\n";
+        for (size_t i = 0; i < structs.size(); ++i)
+        {
+            const auto& s = structs[i];
+            f << "  {\"name\":" << jstr(s.name)
+              << ",\"path\":" << jstr(s.pkgPath)
+              << ",\"fields\":[";
+            for (size_t j = 0; j < s.fields.size(); ++j)
+            {
+                if (j) f << ",";
+                f << "{\"name\":" << jstr(s.fields[j].name)
+                  << ",\"type\":" << s.fields[j].typeJson << "}";
+            }
+            f << "]}";
+            if (i + 1 < structs.size()) f << ",";
+            f << "\n";
+        }
+        f << "],\n";
+
+        // — Classes (in topological order) —
+        f << "\"classes\":[\n";
+        for (size_t i = 0; i < ordered.size(); ++i)
+        {
+            const ClassData& cd = *ordered[i];
+            f << "  {\n"
+              << "    \"name\":"         << jstr(cd.name)       << ",\n"
+              << "    \"path\":"         << jstr(cd.pkgPath)    << ",\n"
+              << "    \"parent_name\":"  << jstr(cd.parentName) << ",\n"
+              << "    \"parent_path\":"  << jstr(cd.parentPkg)  << ",\n"
+              << "    \"parent_native\":" << (cd.parentNative ? "true" : "false") << ",\n"
+              << "    \"is_fnlib\":"     << (cd.isFnLib ? "true" : "false") << ",\n";
+
+            // Functions
+            f << "    \"functions\":[\n";
+            for (size_t fi = 0; fi < cd.funcs.size(); ++fi)
+            {
+                const FuncData& fn = cd.funcs[fi];
+                f << "      {\"name\":" << jstr(fn.name)
+                  << ",\"is_static\":" << (fn.isStatic ? "true" : "false")
+                  << ",\"is_pure\":"   << (fn.isPure   ? "true" : "false")
+                  << ",\"inputs\":[";
+                for (size_t pi = 0; pi < fn.inputs.size(); ++pi)
+                {
+                    if (pi) f << ",";
+                    f << "{\"name\":" << jstr(fn.inputs[pi].name)
+                      << ",\"type\":" << fn.inputs[pi].typeJson << "}";
+                }
+                f << "],\"outputs\":[";
+                for (size_t pi = 0; pi < fn.outputs.size(); ++pi)
+                {
+                    if (pi) f << ",";
+                    f << "{\"name\":" << jstr(fn.outputs[pi].name)
+                      << ",\"type\":" << fn.outputs[pi].typeJson << "}";
+                }
+                f << "]}";
+                if (fi + 1 < cd.funcs.size()) f << ",";
+                f << "\n";
+            }
+            f << "    ],\n";
+
+            // Delegates (event dispatchers)
+            f << "    \"delegates\":[\n";
+            for (size_t di = 0; di < cd.delegates.size(); ++di)
+            {
+                const DelegateData& dd = cd.delegates[di];
+                f << "      {\"name\":" << jstr(dd.name) << ",\"inputs\":[";
+                for (size_t pi = 0; pi < dd.inputs.size(); ++pi)
+                {
+                    if (pi) f << ",";
+                    f << "{\"name\":" << jstr(dd.inputs[pi].name)
+                      << ",\"type\":" << dd.inputs[pi].typeJson << "}";
+                }
+                f << "]}";
+                if (di + 1 < cd.delegates.size()) f << ",";
+                f << "\n";
+            }
+            f << "    ],\n";
+
+            // Variables
+            f << "    \"variables\":[\n";
+            for (size_t vi = 0; vi < cd.vars.size(); ++vi)
+            {
+                if (vi) f << ",\n";
+                f << "      {\"name\":" << jstr(cd.vars[vi].name)
+                  << ",\"type\":" << cd.vars[vi].typeJson
+                  << ",\"readonly\":" << (cd.vars[vi].readOnly ? "true" : "false")
+                  << ",\"defaultValue\":" << jstr(cd.vars[vi].defaultValue) << "}";
+            }
+            f << "\n    ],\n";
+
+            // Actor components
+            f << "    \"actor_components\":[\n";
+            for (size_t ci = 0; ci < cd.actorComponents.size(); ++ci)
+            {
+                if (ci) f << ",\n";
+                f << "      {\"name\":" << jstr(cd.actorComponents[ci].name)
+                  << ",\"class_name\":" << jstr(cd.actorComponents[ci].className)
+                  << ",\"class_path\":" << jstr(cd.actorComponents[ci].classPath)
+                  << ",\"attach_parent\":" << jstr(cd.actorComponents[ci].attachParent) << "}";
+            }
+            f << "\n    ],\n";
+
+            // Widget components
+            f << "    \"widget_components\":[\n";
+            for (size_t ci = 0; ci < cd.widgetComponents.size(); ++ci)
+            {
+                if (ci) f << ",\n";
+                f << "      {\"name\":" << jstr(cd.widgetComponents[ci].name)
+                  << ",\"class_name\":" << jstr(cd.widgetComponents[ci].className)
+                  << ",\"class_path\":" << jstr(cd.widgetComponents[ci].classPath) << "}";
+            }
+            f << "\n    ]\n  }";
+            if (i + 1 < ordered.size()) f << ",";
+            f << "\n";
+        }
+        f << "],\n";
+
+        // — Non-blueprintable assets —
+        f << "\"assets\":[\n";
+        for (size_t i = 0; i < assets.size(); ++i)
+        {
+            if (i) f << ",\n";
+            f << "  {\"name\":"       << jstr(assets[i].name)
+              << ",\"path\":"         << jstr(assets[i].pkgPath)
+              << ",\"asset_type\":"   << jstr(assets[i].assetType) << "}";
+        }
+        f << "\n]\n}\n";
+
+        f.flush();
+        const bool ok = f.good();
+
+        Output::send<LogLevel::Normal>(
+            STR("[BlueprintStubGenerator] Wrote {}/{}/{}/{} enums/structs/classes/assets to '{}' — {}\n"),
+            enums.size(), structs.size(), ordered.size(), assets.size(),
+            outputPath.c_str(),
+            ok ? STR("OK") : STR("write error"));
+
+        return ok;
+    }
+
+} // namespace RC::BlueprintStubGenerator

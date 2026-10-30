@@ -79,3 +79,9 @@ vsxmake2022
 
 # xwin
 xwin/*
+
+# Fork-local
+/a0.10.0_0009/
+/cppmods/*_backup_*/
+/build*/
+/out/

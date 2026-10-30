@@ -1,0 +1,120 @@
+{
+  "name": "Engine Essentials",
+  "description": "Cheats built only on stock Unreal Engine classes (Pawn, Character, CharacterMovementComponent). They work in any game whose player is a standard ACharacter; games with custom health/stamina variables need their own trainer (see the VotV example and the trainer creator).",
+  "author": "ToolkitMod",
+  "version": 1,
+  "cheats": [
+    {
+      "id": "invincible",
+      "label": "Invincible (engine damage events)",
+      "description": "Marks the player as undamageable and swallows the Receive*Damage events so Blueprint health logic never runs.",
+      "type": "toggle",
+      "actions": [
+        { "kind": "set_property", "target": "player_pawn", "property": "bCanBeDamaged", "value": "false" },
+        { "kind": "block_function", "target": "player_pawn", "function": "ReceiveAnyDamage" },
+        { "kind": "block_function", "target": "player_pawn", "function": "ReceivePointDamage" },
+        { "kind": "block_function", "target": "player_pawn", "function": "ReceiveRadialDamage" }
+      ]
+    },
+    {
+      "id": "walk_speed",
+      "label": "Walk speed multiplier",
+      "type": "slider",
+      "min": 0.25,
+      "max": 10.0,
+      "default_value": 2.0,
+      "actions": [
+        { "kind": "scale_property", "target": "player_pawn.CharacterMovement", "property": "MaxWalkSpeed", "scale": 1.0 }
+      ]
+    },
+    {
+      "id": "jump_height",
+      "label": "Jump height multiplier",
+      "type": "slider",
+      "min": 0.25,
+      "max": 8.0,
+      "default_value": 2.0,
+      "actions": [
+        { "kind": "scale_property", "target": "player_pawn.CharacterMovement", "property": "JumpZVelocity", "scale": 1.0 }
+      ]
+    },
+    {
+      "id": "infinite_jumps",
+      "label": "Infinite jumps",
+      "type": "toggle",
+      "actions": [
+        { "kind": "set_property", "target": "player_pawn", "property": "JumpMaxCount", "value": "999" }
+      ]
+    },
+    {
+      "id": "gravity",
+      "label": "Gravity scale",
+      "type": "slider",
+      "min": 0.0,
+      "max": 4.0,
+      "default_value": 0.4,
+      "actions": [
+        { "kind": "freeze_property", "target": "player_pawn.CharacterMovement", "property": "GravityScale", "value": "{value}" }
+      ]
+    },
+    {
+      "id": "fly",
+      "label": "Fly",
+      "description": "Switches the character movement component to flying mode.",
+      "type": "toggle",
+      "actions": [
+        {
+          "kind": "call_function",
+          "target": "player_pawn.CharacterMovement",
+          "function": "SetMovementMode",
+          "params": { "NewMovementMode": "MOVE_Flying" },
+          "off_function": "SetMovementMode",
+          "off_params": { "NewMovementMode": "MOVE_Walking" }
+        }
+      ]
+    },
+    {
+      "id": "noclip",
+      "label": "Noclip",
+      "description": "Flying with collision disabled.",
+      "type": "toggle",
+      "actions": [
+        {
+          "kind": "call_function",
+          "target": "player_pawn",
+          "function": "SetActorEnableCollision",
+          "params": { "bNewActorEnableCollision": "false" },
+          "off_function": "SetActorEnableCollision",
+          "off_params": { "bNewActorEnableCollision": "true" }
+        },
+        {
+          "kind": "call_function",
+          "target": "player_pawn.CharacterMovement",
+          "function": "SetMovementMode",
+          "params": { "NewMovementMode": "MOVE_Flying" },
+          "off_function": "SetMovementMode",
+          "off_params": { "NewMovementMode": "MOVE_Walking" }
+        }
+      ]
+    },
+    {
+      "id": "time_scale",
+      "label": "Game speed",
+      "type": "slider",
+      "min": 0.05,
+      "max": 5.0,
+      "default_value": 0.5,
+      "actions": [
+        { "kind": "time_scale", "value": "{value}" }
+      ]
+    },
+    {
+      "id": "show_fps",
+      "label": "Toggle FPS counter",
+      "type": "button",
+      "actions": [
+        { "kind": "console", "value": "stat fps" }
+      ]
+    }
+  ]
+}

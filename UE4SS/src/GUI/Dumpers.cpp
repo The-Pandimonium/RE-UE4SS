@@ -30,6 +30,7 @@
 #include <chrono>
 #include <imgui.h>
 #include <glaze/glaze.hpp>
+#include <BlueprintStubGenerator.hpp>
 
 namespace RC::GUI::Dumpers
 {
@@ -782,5 +783,21 @@ namespace RC::GUI::Dumpers
             });
         }
         ImGui::EndDisabled();
+
+        ImGui::Separator();
+
+        if (ImGui::Button("Export Blueprint Stub Data (JSON)\n"))
+        {
+            TRY([] {
+                File::StringType working_dir{UE4SSProgram::get_program().get_working_directory()};
+                const std::wstring outputPath = working_dir + STR("\\ue4ss_blueprint_stubs.json");
+                const bool ok = BlueprintStubGenerator::Generate(outputPath);
+                if (ok)
+                    Output::send(STR("Blueprint stub data written to: {}\nLoad this file with the ModdingAPIGenerator Unreal Editor plugin.\n"), outputPath);
+            });
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Exports all Blueprint classes, structs, and enums to JSON.\nOpen the result with the ModdingAPIGenerator plugin inside Unreal Editor\nto auto-create stub assets.");
+
     }
 } // namespace RC::GUI::Dumpers

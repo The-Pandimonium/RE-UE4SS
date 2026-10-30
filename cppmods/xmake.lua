@@ -1,1 +1,2 @@
 includes("KismetDebuggerMod")
+includes("ToolkitMod")

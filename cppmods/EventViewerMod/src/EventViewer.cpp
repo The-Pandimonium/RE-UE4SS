@@ -7,6 +7,7 @@
 
 #include <Unreal/Hooks/Hooks.hpp>
 #include <Client.hpp>
+#include <PropAnalyzerClient.hpp>
 #include <UE4SSProgram.hpp>
 #include <UEngine.hpp>
 
@@ -29,6 +30,14 @@ namespace RC::EventViewerMod
             style.GrabMinSize = 30.0f;
             Client::GetInstance().render();
             style.GrabMinSize = old_size;
+            ImGui::EndDisabled();
+        });
+
+        register_tab(STR("PropertyAnalyzer"), [](CppUserModBase* mod) {
+            UE4SS_ENABLE_IMGUI();
+
+            ImGui::BeginDisabled(!static_cast<EventViewerMod*>(mod)->m_unreal_loaded.test()); // NOLINT(*-pro-type-static-cast-downcast)
+            PropAnalyzerClient::GetInstance().render();
             ImGui::EndDisabled();
         });
     }

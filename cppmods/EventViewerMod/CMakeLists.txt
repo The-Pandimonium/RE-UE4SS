@@ -20,6 +20,8 @@ add_library(${TARGET} SHARED
         src/StringPool.cpp
         src/EntryCallStackRenderer.cpp
         src/FilterCountRenderer.cpp
+        src/PropAnalyzer.cpp
+        src/PropAnalyzerClient.cpp
 )
 
 target_include_directories(${TARGET} PRIVATE "include")
