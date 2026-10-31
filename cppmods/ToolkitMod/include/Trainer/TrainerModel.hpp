@@ -55,9 +55,11 @@ namespace RC::Toolkit
         std::string label{};
         std::string description{};
         std::string type{"toggle"}; // toggle | button | slider
+        // Slider range. Only the drag range: any value can be typed into the box next to the slider, also outside it.
         double min{0.0};
-        double max{1.0};
+        double max{100.0};
         double default_value{1.0};
+        bool log{false}; // logarithmic slider: fine control near min, still reaches max (for ranges like 1 to 10000)
         std::vector<ActionDef> actions{};
     };
 

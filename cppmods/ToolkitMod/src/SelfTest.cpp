@@ -276,6 +276,10 @@ steps.push_back({"target selection + availability", 30, [](int) {               
                                      if (std::abs(height() - base * 3.0) > 0.01) return fail(std::format("slider to 3.0: BaseEyeHeight {} expected {}", height(), base * 3.0));
                                      engine.set_value(ti, 0, 0.5);
                                      if (std::abs(height() - base * 0.5) > 0.01) return fail(std::format("slider to 0.5: BaseEyeHeight {} expected {}", height(), base * 0.5));
+                                     // Large values (e.g. 400) work too: the range only limits dragging.
+                                     engine.set_value(ti, 0, 400.0);
+                                     if (std::abs(height() - base * 400.0) > 0.5) return fail(std::format("slider to 400: BaseEyeHeight {} expected {}", height(), base * 400.0));
+                                     engine.set_value(ti, 0, 0.5);
                                      // The game fighting back: the cheat must re-apply the slider value.
                                      Reflect::SetPropertyNumber(p, L"BaseEyeHeight", base);
                                      return pending();
@@ -286,7 +290,7 @@ steps.push_back({"target selection + availability", 30, [](int) {               
                                  const double restored = height();
                                  if (std::abs(held - base * 0.5) > 0.01) return fail(std::format("not re-applied after the game reset it: {}", held));
                                  if (std::abs(restored - base) > 0.01) return fail(std::format("not restored on disable: {} vs {}", restored, base));
-                                 return pass(std::format("BaseEyeHeight {} -> x2 default -> x3 -> x0.5, held, restored", base));
+                                 return pass(std::format("BaseEyeHeight {} -> x2 default -> x3 -> x400 -> x0.5, held, restored", base));
                              }});
 
             steps.push_back({"microbench (informational)", 600, [](int) {

@@ -34,7 +34,8 @@ See `include/Trainer/TrainerModel.hpp` for the full schema. A cheat is a toggle,
 `world`, `world_settings`, `hud`, `class:<Name>`, `object:<path>`, with `.Property` chains
 (`player_pawn.CharacterMovement`). Targets are **classes**, not objects (objects are recreated on every level load); each action
 has `select`: `all` (every instance), `first`, `nearest` (to the player) or `index` (the Nth). The creator's **Pick class...**
-lists the classes that currently have live objects. A cheat whose targets do not exist in the current level is greyed out and
+lists the classes that currently have live objects. Sliders have `min`/`max` (default 0 to 100) for dragging, an optional
+`"log": true` for wide ranges, and a value box that accepts any number (e.g. 400) regardless of the range. A cheat whose targets do not exist in the current level is greyed out and
 cannot be switched on or pressed. `assets/trainers/EngineEssentials.json` is a working example built only on stock
 engine classes.
 

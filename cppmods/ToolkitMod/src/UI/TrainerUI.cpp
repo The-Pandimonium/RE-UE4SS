@@ -123,15 +123,23 @@ namespace RC::Toolkit::UI
                             if (cheat.type == "slider")
                             {
                                 ImGui::SameLine();
-                                float value = static_cast<float>(state.value);
+                                double value = state.value;
+                                double low = cheat.min;
+                                double high = std::max(cheat.max, cheat.min + 1e-6);
+                                // Logarithmic sliders need a positive range; they give fine control near `min` and still reach `max`.
+                                const ImGuiSliderFlags flags = cheat.log && low > 0.0 ? ImGuiSliderFlags_Logarithmic : ImGuiSliderFlags_None;
                                 ImGui::SetNextItemWidth(220);
-                                if (ImGui::SliderFloat("##value", &value, static_cast<float>(cheat.min), static_cast<float>(cheat.max), "%.2f"))
+                                bool changed = ImGui::SliderScalar("##value", ImGuiDataType_Double, &value, &low, &high, "%.4g", flags);
+                                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to set the value. Moving it switches the cheat on.\nThe box next to it takes any number, also outside the slider range.");
+                                ImGui::SameLine();
+                                ImGui::SetNextItemWidth(90);
+                                changed |= ImGui::InputDouble("##exact", &value, 0.0, 0.0, "%.6g", ImGuiInputTextFlags_EnterReturnsTrue);
+                                if (changed)
                                 {
                                     engine.set_value(ti, ci, value);
                                     // Moving the slider is an intent to use it: switch the cheat on.
                                     if (!state.enabled) engine.set_enabled(ti, ci, true);
                                 }
-                                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to set the value (Ctrl+click to type). Moving it switches the cheat on.");
                             }
                         }
                         if (blocked)
@@ -604,6 +612,9 @@ namespace RC::Toolkit::UI
                     ImGui::SameLine();
                     ImGui::SetNextItemWidth(100);
                     ImGui::InputDouble("default", &cheat.default_value);
+                    ImGui::SameLine();
+                    ImGui::Checkbox("log", &cheat.log);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Logarithmic slider: use for wide ranges such as 1 to 10000 (needs min > 0).\nThe value box next to the slider accepts any number regardless of the range.");
                 }
 
                 size_t remove_index = cheat.actions.size();
