@@ -10,6 +10,7 @@ namespace RC::Toolkit::UI
 {
     auto render_engine_tab() -> void
     {
+        const ScrollRegion scroll("##toolkit_scroll_engine");
         auto& session = Session::get();
         const auto [profile, adapter] = session.engine_info();
 

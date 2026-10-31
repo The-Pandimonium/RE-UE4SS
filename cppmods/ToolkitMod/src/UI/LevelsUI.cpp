@@ -72,6 +72,7 @@ namespace RC::Toolkit::UI
 
     auto render_levels_tab() -> void
     {
+        const ScrollRegion scroll("##toolkit_scroll_levels");
         auto& ls = state();
         auto& session = Session::get();
         const SessionSnapshot snap = session.snapshot();
@@ -126,7 +127,7 @@ namespace RC::Toolkit::UI
             }
         }
 
-        if (!ImGui::BeginTable("##levels", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY, ImVec2(0, 0))) return;
+        if (!ImGui::BeginTable("##levels", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY, ImVec2(0.0f, std::max(300.0f, ImGui::GetContentRegionAvail().y)))) return;
         ImGui::TableSetupColumn("Level");
         ImGui::TableSetupColumn("Package");
         ImGui::TableSetupColumn("##open", ImGuiTableColumnFlags_WidthFixed, 70);

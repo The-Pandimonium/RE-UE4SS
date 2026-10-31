@@ -41,6 +41,7 @@ namespace RC::Toolkit::UI
 
     auto render_teleport_tab() -> void
     {
+        const ScrollRegion scroll("##toolkit_scroll_teleport");
         auto& ts = state();
         auto& session = Session::get();
         auto& store = WaypointStore::get();

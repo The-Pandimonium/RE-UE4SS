@@ -658,6 +658,7 @@ namespace RC::Toolkit::UI
 
     auto render_trainer_tab() -> void
     {
+        const ScrollRegion scroll("##toolkit_scroll_trainer");
         render_cheats();
         ImGui::Spacing();
         if (ImGui::CollapsingHeader("Trainer creator")) render_creator();
