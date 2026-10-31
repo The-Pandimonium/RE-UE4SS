@@ -39,6 +39,8 @@ namespace RC::Toolkit
 
         // ---- Trainer files (any thread) ----
         auto reload() -> void;
+        // Test hook: adds an in-memory trainer (not saved) and returns its index.
+        auto add_trainer_for_test(TrainerDef trainer) -> size_t;
         [[nodiscard]] auto trainers() const -> std::vector<TrainerDef>; // copy
         auto save(const TrainerDef& trainer, const std::string& file_stem) -> bool;
         [[nodiscard]] auto file_stem_of(size_t trainer_index) const -> std::string;
@@ -88,6 +90,7 @@ namespace RC::Toolkit
         {
             bool enabled{false};
             double value{1.0};
+            bool value_set{false}; // the user moved the slider (so 1.0 is a real choice, not "untouched")
             std::string status{};
             std::vector<ActionRuntime> actions{};
             CheatDef def{}; // copy of the definition while enabled, so ticking does not depend on the trainer list

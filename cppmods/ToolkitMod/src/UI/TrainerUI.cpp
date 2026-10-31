@@ -123,10 +123,15 @@ namespace RC::Toolkit::UI
                             if (cheat.type == "slider")
                             {
                                 ImGui::SameLine();
-                                float value = static_cast<float>(state.enabled || state.value != 1.0 ? state.value : cheat.default_value);
+                                float value = static_cast<float>(state.value);
                                 ImGui::SetNextItemWidth(220);
-                                if (ImGui::SliderFloat("##value", &value, static_cast<float>(cheat.min), static_cast<float>(cheat.max)))
+                                if (ImGui::SliderFloat("##value", &value, static_cast<float>(cheat.min), static_cast<float>(cheat.max), "%.2f"))
+                                {
                                     engine.set_value(ti, ci, value);
+                                    // Moving the slider is an intent to use it: switch the cheat on.
+                                    if (!state.enabled) engine.set_enabled(ti, ci, true);
+                                }
+                                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to set the value (Ctrl+click to type). Moving it switches the cheat on.");
                             }
                         }
                         if (blocked)

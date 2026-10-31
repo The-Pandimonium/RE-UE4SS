@@ -207,7 +207,7 @@ namespace RC::Toolkit
         if (auto it = m_runtime.find(key_of(trainer, cheat)); it != m_runtime.end())
         {
             out.enabled = it->second.enabled;
-            out.value = it->second.value;
+            out.value = (it->second.value_set || it->second.enabled) ? it->second.value : cheat.default_value;
             out.status = it->second.status;
         }
         if (auto av = m_availability.find(key_of(trainer, cheat)); av != m_availability.end())
@@ -243,7 +243,7 @@ namespace RC::Toolkit
             }
             if (enabled)
             {
-                if (rt.value == 1.0 && cheat.type == "slider") rt.value = cheat.default_value;
+                if (cheat.type == "slider" && !rt.value_set) rt.value = cheat.default_value;
                 rt.def = cheat;
                 rt.enabled = apply_enable(cheat, rt, rt.status);
                 if (!rt.enabled) apply_disable(cheat, rt, rt.status);
@@ -265,7 +265,9 @@ namespace RC::Toolkit
             if (ti >= m_trainers.size() || ci >= m_trainers[ti].cheats.size()) return;
             trainer = m_trainers[ti];
             cheat = trainer.cheats[ci];
-            runtime_for(key_of(trainer, cheat), cheat.actions.size()).value = value;
+            auto& slot = runtime_for(key_of(trainer, cheat), cheat.actions.size());
+            slot.value = value;
+            slot.value_set = true;
         }
         const std::string key = key_of(trainer, cheat);
         GameThread::Post([this, key, cheat] {
@@ -815,5 +817,18 @@ namespace RC::Toolkit
             }
         }
         return true;
+    }
+} // namespace RC::Toolkit
+
+namespace RC::Toolkit
+{
+    auto TrainerEngine::add_trainer_for_test(TrainerDef trainer) -> size_t
+    {
+        std::lock_guard lock(m_mutex);
+        m_trainers.push_back(std::move(trainer));
+        m_stems.push_back("__test__");
+        m_avail_dirty = true;
+        m_availability.clear();
+        return m_trainers.size() - 1;
     }
 } // namespace RC::Toolkit

@@ -237,6 +237,58 @@ steps.push_back({"target selection + availability", 30, [](int) {               
                                  return pass(std::format("teleported {:.0f}uu and returned", std::hypot(400.0, 400.0)));
                              }});
 
+            // The slider path exactly as the UI drives it: enable, then move the slider while enabled.
+            steps.push_back({"trainer slider (UI path)", 2000, [&r](int tick) {
+                                 static size_t ti = 0;
+                                 static UObject* p = nullptr;
+                                 static double base = 0;
+                                 auto& engine = TrainerEngine::get();
+                                 auto height = [&] { return Reflect::GetPropertyNumber(p, L"BaseEyeHeight").value_or(-1.0); };
+                                 if (tick == 0)
+                                 {
+                                     p = pawn();
+                                     auto h = Reflect::GetPropertyNumber(p, L"BaseEyeHeight");
+                                     if (!h) return pass("SKIPPED: pawn has no BaseEyeHeight");
+                                     base = *h;
+                                     ActionDef scale;
+                                     scale.kind = "scale_property"; scale.target = "player_pawn"; scale.property = "BaseEyeHeight";
+                                     TrainerDef t;
+                                     t.name = "SliderTest";
+                                     t.cheats = {make_cheat("slider_scale", "slider", {scale})};
+                                     t.cheats[0].min = 0.5; t.cheats[0].max = 4.0; t.cheats[0].default_value = 2.0;
+                                     ti = engine.add_trainer_for_test(t);
+                                     return pending();
+                                 }
+                                 const auto state = engine.state(ti, 0);
+                                 if (tick < 60) return pending(); // let availability settle
+                                 if (tick == 60)
+                                 {
+                                     if (!state.available) return fail("slider cheat unavailable: " + state.unavailable_reason);
+                                     // Untouched slider: enabling uses the default (2.0).
+                                     engine.set_enabled(ti, 0, true); // runs inline on the game thread
+                                     if (std::abs(height() - base * 2.0) > 0.01) return fail(std::format("enable: BaseEyeHeight {} expected {} (default 2.0)", height(), base * 2.0));
+                                     engine.set_enabled(ti, 0, false);
+                                     // Slider moved to exactly 1.0 while off, then enabled: 1.0 is a real choice, not "untouched".
+                                     engine.set_value(ti, 0, 1.0);
+                                     engine.set_enabled(ti, 0, true);
+                                     if (std::abs(height() - base * 1.0) > 0.01) return fail(std::format("slider set to 1.0 then enabled: BaseEyeHeight {} expected {}", height(), base));
+                                     engine.set_value(ti, 0, 3.0);
+                                     if (std::abs(height() - base * 3.0) > 0.01) return fail(std::format("slider to 3.0: BaseEyeHeight {} expected {}", height(), base * 3.0));
+                                     engine.set_value(ti, 0, 0.5);
+                                     if (std::abs(height() - base * 0.5) > 0.01) return fail(std::format("slider to 0.5: BaseEyeHeight {} expected {}", height(), base * 0.5));
+                                     // The game fighting back: the cheat must re-apply the slider value.
+                                     Reflect::SetPropertyNumber(p, L"BaseEyeHeight", base);
+                                     return pending();
+                                 }
+                                 if (tick < 90) return pending();
+                                 const double held = height();
+                                 engine.set_enabled(ti, 0, false);
+                                 const double restored = height();
+                                 if (std::abs(held - base * 0.5) > 0.01) return fail(std::format("not re-applied after the game reset it: {}", held));
+                                 if (std::abs(restored - base) > 0.01) return fail(std::format("not restored on disable: {} vs {}", restored, base));
+                                 return pass(std::format("BaseEyeHeight {} -> x2 default -> x3 -> x0.5, held, restored", base));
+                             }});
+
             steps.push_back({"microbench (informational)", 600, [](int) {
                                  using clock = std::chrono::steady_clock;
                                  auto& adapter = AdapterRegistry::Get();
