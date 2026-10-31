@@ -54,6 +54,15 @@ Set `"selftest": true` in `Mods/ToolkitMod/config.json` and start the game; resu
 or `"wait"` to wait until something else loads a level with a real player pawn.
 Environment variable `TOOLKIT_SKIPENUM=1` skips the asset-registry level enumeration step (debugging aid).
 
+## Performance
+
+The toolkit has a frame-cost budget that the self test enforces (`performance: cheats enabled for 15 s`): each tick
+callback must average under 150 us with spikes under 4 ms. Measured in Voices of the Void with four cheats holding
+values: trainer 17 us/tick, session snapshot 14 us, markers 4 us, everything together 37 us (max 0.34 ms).
+`EngineCompat::GameThread::TickStats()` reports the cost per callback. How it stays cheap: `Reflect` caches property,
+function and class lookups; cheats resolve their targets twice a second, not every frame; availability checks evaluate
+one target per 0.1 s; `IsValidObject` is O(1) (`UObject::IsReal` scans the whole object array, ~0.5 ms).
+
 ## Known issues (Voices of the Void)
 
 * Calling `GetAllAssets` on the asset registry's class default object crashes the game (null read inside the engine).

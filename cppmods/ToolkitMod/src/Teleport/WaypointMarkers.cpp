@@ -82,6 +82,12 @@ namespace RC::Toolkit
     // Once a second, on the game thread: make the set of marker actors match the visible waypoints.
     auto WaypointRenderer::reconcile_markers() -> void
     {
+        // Nothing shown and nothing wanted: do no engine work at all.
+        if (m_markers.empty() && !WaypointStore::get().any_visible())
+        {
+            m_marker_count = 0;
+            return;
+        }
         auto& adapter = Compat::AdapterRegistry::Get();
         UObject* world = adapter.world();
         if (world != m_marker_world)

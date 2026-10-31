@@ -101,7 +101,7 @@ namespace RC::Toolkit
     {
         if (m_installed) return;
         m_installed = true;
-        Compat::GameThread::AddTick([this](float dt) { tick(dt); });
+        Compat::GameThread::AddTick([this](float dt) { tick(dt); }, "markers");
         Hook::RegisterProcessEventPreCallback(
                 [this](Hook::TCallbackIterationData<void>&, UObject* context, UFunction* function, void*) {
                     // Cheap rejection first: this hook sees every Blueprint/native event in the game.

@@ -52,7 +52,9 @@ namespace RC::Compat
         const auto now = std::chrono::steady_clock::now();
         if (!m_pc_cache || !Reflect::IsValidObject(m_pc_cache) || now - m_pc_cache_time > std::chrono::seconds{1})
         {
+            UObject* previous = m_pc_cache;
             m_pc_cache = UObjectGlobals::FindFirstOf(L"PlayerController");
+            if (m_pc_cache != previous) Reflect::ClearCaches(); // new level: classes behind cached lookups may be gone
             m_pc_cache_time = now;
         }
         return m_pc_cache;

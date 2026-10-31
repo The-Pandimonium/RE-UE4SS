@@ -24,7 +24,7 @@ namespace RC::Toolkit
 
     namespace
     {
-        constexpr double kRefreshSeconds = 0.25;
+        constexpr double kRefreshSeconds = 0.5;
 
         auto parse_number(const std::string& text, double& out) -> bool
         {
@@ -122,7 +122,7 @@ namespace RC::Toolkit
         if (m_installed) return;
         m_installed = true;
         GameThread::Install();
-        GameThread::AddTick([this](float dt) { tick(dt); });
+        GameThread::AddTick([this](float dt) { tick(dt); }, "trainer");
         Hook::RegisterProcessEventPreCallback(
                 [this](Hook::TCallbackIterationData<void>& data, UObject* context, UFunction* function, void* params) {
                     on_process_event(data, context, function, params);
@@ -161,6 +161,8 @@ namespace RC::Toolkit
         }
         std::lock_guard lock(m_mutex);
         m_trainers = std::move(loaded);
+        m_avail_dirty = true;
+        m_availability.clear();
         m_stems = std::move(stems);
         Output::send<LogLevel::Normal>(STR("[ToolkitMod] Loaded {} trainer file(s) from {}\n"), m_trainers.size(), m_directory.wstring());
     }
@@ -466,6 +468,9 @@ namespace RC::Toolkit
                 refresh_objects(action, art);
                 art.base_numbers.clear();
                 art.base_texts.clear();
+                art.props.clear();
+                art.value_ready = false;
+                art.next_refresh = 0.0;
                 if (art.objects.empty()) { last_error = "target '" + action.target + "' not found"; all_ok = false; continue; }
                 for (UObject* obj : art.objects)
                 {
@@ -618,25 +623,38 @@ namespace RC::Toolkit
                     if (m_clock >= art.next_refresh)
                     {
                         auto fresh = resolve_targets(action.target, action.select, action.index);
+                        if (art.property_w.empty()) art.property_w = ensure_str(action.property);
+                        art.props.clear();
                         for (UObject* obj : fresh)
                         {
+                            FProperty* p = Reflect::FindProperty(obj, art.property_w);
+                            if (!p) continue;
+                            art.props[obj] = p;
                             if (art.base_numbers.contains(obj) || art.base_texts.contains(obj)) continue;
-                            if (FProperty* p = Reflect::FindProperty(obj, ensure_str(action.property)))
-                            {
-                                if (auto text = Reflect::ExportText(p, p->ContainerPtrToValuePtr<void>(obj), obj)) art.base_texts[obj] = *text;
-                                if (auto number = Reflect::GetNumber(p, p->ContainerPtrToValuePtr<void>(obj))) art.base_numbers[obj] = *number;
-                            }
+                            if (auto text = Reflect::ExportText(p, p->ContainerPtrToValuePtr<void>(obj), obj)) art.base_texts[obj] = *text;
+                            if (auto number = Reflect::GetNumber(p, p->ContainerPtrToValuePtr<void>(obj))) art.base_numbers[obj] = *number;
                         }
                         art.objects = std::move(fresh);
-                        art.next_refresh = m_clock + kRefreshSeconds;
+                        // Spread refreshes over time so many cheats do not all resolve on the same frame.
+                        art.next_refresh = m_clock + kRefreshSeconds + 0.013 * static_cast<double>(i % 8);
                     }
+
+                    // The wanted value only changes when the slider moves; parse it once, not every frame.
+                    if (!art.value_ready || art.value_key != rt.value)
+                    {
+                        art.wanted_text = substitute(action.value, rt.value);
+                        art.wanted_parsed = parse_number(art.wanted_text, art.wanted) || parse_bool_text(art.wanted_text, art.wanted);
+                        art.value_key = rt.value;
+                        art.value_ready = true;
+                    }
+
                     for (UObject* obj : art.objects)
                     {
                         if (!Reflect::IsValidObject(obj)) continue;
-                        FProperty* p = Reflect::FindProperty(obj, ensure_str(action.property));
-                        if (!p) continue;
+                        auto cached = art.props.find(obj);
+                        if (cached == art.props.end()) continue;
+                        FProperty* p = cached->second;
                         void* ptr = p->ContainerPtrToValuePtr<void>(obj);
-                        std::string error;
                         if (action.kind == "scale_property")
                         {
                             auto base = art.base_numbers.find(obj);
@@ -646,11 +664,9 @@ namespace RC::Toolkit
                             if (!current || std::abs(*current - wanted) > 1e-4) Reflect::SetNumber(p, ptr, wanted);
                             continue;
                         }
-                        const std::string text = substitute(action.value, rt.value);
-                        double wanted = 0.0;
-                        const bool numeric = Reflect::IsNumeric(p) && (parse_number(text, wanted) || parse_bool_text(text, wanted));
-                        if (numeric)
+                        if (art.wanted_parsed && Reflect::IsNumeric(p))
                         {
+                            const double wanted = art.wanted;
                             auto current = Reflect::GetNumber(p, ptr);
                             const bool differs = !current || std::abs(*current - wanted) > 1e-4;
                             bool write = differs;
@@ -658,9 +674,12 @@ namespace RC::Toolkit
                             else if (action.mode == "at_most") write = !current || *current > wanted;
                             if (write) Reflect::SetNumber(p, ptr, wanted);
                         }
-                        else
+                        else if (m_clock >= art.next_text_write)
                         {
-                            write_value(obj, action.property, text, error);
+                            // Non-numeric values (strings, structs, objects) are rewritten a few times a second.
+                            std::string error;
+                            write_value(obj, action.property, art.wanted_text, error);
+                            art.next_text_write = m_clock + 0.25;
                         }
                     }
                 }
@@ -707,13 +726,56 @@ namespace RC::Toolkit
 
 namespace RC::Toolkit
 {
-    // Works out, once a second, which cheats have something to act on in the current level. A cheat that targets a
-    // class with no live objects (or "the Nth" of a class that has fewer) is reported unavailable so the UI can
-    // grey it out instead of letting it fail silently.
+    // Works out which cheats have something to act on in the current level, so the UI can grey out the others.
+    //
+    // Resolving a target can scan the whole object array, so it is spread over time: each call (every 0.1 s)
+    // re-evaluates at most ONE distinct target expression, the most out of date one, and an expression is re-checked
+    // at most every few seconds. The per-cheat verdicts are then derived from those cached counts without touching
+    // the engine.
     auto TrainerEngine::refresh_availability() -> void
     {
-        m_next_availability = m_clock + 1.0;
-        std::map<std::string, size_t> counts;
+        m_next_availability = m_clock + 0.1;
+
+        if (m_avail_dirty)
+        {
+            m_avail_dirty = false;
+            m_avail_exprs.clear();
+            for (const auto& trainer : m_trainers)
+            {
+                for (const auto& cheat : trainer.cheats)
+                {
+                    for (const auto& action : cheat.actions)
+                    {
+                        if (action.kind == "console" || action.kind == "time_scale") continue;
+                        if (action.kind == "block_function" && (action.target.empty() || action.target == "any")) continue;
+                        const std::string key = action.target + "|" + action.select + "|" + std::to_string(action.index);
+                        m_avail_exprs.try_emplace(key, AvailExpr{action.target, action.select, action.index, -1, -1e9});
+                    }
+                }
+            }
+        }
+
+        AvailExpr* stalest = nullptr;
+        for (auto& [key, expr] : m_avail_exprs)
+        {
+            const double age = m_clock - expr.evaluated_at;
+            if (age < 3.0) continue;
+            if (!stalest || expr.evaluated_at < stalest->evaluated_at) stalest = &expr;
+        }
+        const bool changed_input = stalest != nullptr;
+        if (stalest)
+        {
+            const int before = stalest->count;
+            stalest->count = static_cast<int>(resolve_targets(stalest->target, stalest->select, stalest->index).size());
+            stalest->evaluated_at = m_clock;
+            if (before == stalest->count && !m_availability.empty()) return; // nothing changed
+        }
+        else if (!m_availability.empty())
+        {
+            return;
+        }
+        (void)changed_input;
+
         std::map<std::string, Availability> fresh;
         for (const auto& trainer : m_trainers)
         {
@@ -722,12 +784,9 @@ namespace RC::Toolkit
                 Availability result;
                 for (const auto& action : cheat.actions)
                 {
-                    if (action.kind == "console" || action.kind == "time_scale") continue;
-                    if (action.kind == "block_function" && (action.target.empty() || action.target == "any")) continue;
-                    const std::string cache_key = action.target + "|" + action.select + "|" + std::to_string(action.index);
-                    auto it = counts.find(cache_key);
-                    if (it == counts.end()) it = counts.emplace(cache_key, resolve_targets(action.target, action.select, action.index).size()).first;
-                    if (it->second == 0)
+                    auto it = m_avail_exprs.find(action.target + "|" + action.select + "|" + std::to_string(action.index));
+                    if (it == m_avail_exprs.end()) continue;
+                    if (it->second.count == 0)
                     {
                         result.available = false;
                         result.reason = "no live objects for '" + action.target + "'" + (action.select == "all" ? "" : " (" + action.select + ")") + " in this level";

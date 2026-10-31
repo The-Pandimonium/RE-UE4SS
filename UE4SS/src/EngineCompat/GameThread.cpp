@@ -1,6 +1,7 @@
 #include <EngineCompat/GameThread.hpp>
 
 #include <atomic>
+#include <algorithm>
 #include <condition_variable>
 #include <deque>
 #include <memory>
@@ -17,11 +18,34 @@ namespace RC::Compat
 {
     namespace
     {
+        struct GameThreadEntry
+        {
+            GameThreadEntry(uint64_t i, std::string n, GameThread::TickCallback cb) : id(i), name(std::move(n)), callback(std::move(cb)) {}
+            uint64_t id;
+            std::string name;
+            GameThread::TickCallback callback;
+            std::atomic<uint64_t> total_ns{0};
+            std::atomic<uint64_t> max_ns{0};
+            std::atomic<uint64_t> calls{0};
+
+            void record(std::chrono::steady_clock::duration d)
+            {
+                const auto ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(d).count());
+                total_ns.fetch_add(ns, std::memory_order_relaxed);
+                calls.fetch_add(1, std::memory_order_relaxed);
+                uint64_t seen = max_ns.load(std::memory_order_relaxed);
+                while (ns > seen && !max_ns.compare_exchange_weak(seen, ns)) {}
+            }
+        };
+
         struct State
         {
             std::mutex mutex;
             std::deque<GameThread::Job> jobs;
-            std::unordered_map<uint64_t, GameThread::TickCallback> ticks;
+            std::vector<std::shared_ptr<GameThreadEntry>> entries;  // guarded by mutex
+            std::vector<std::shared_ptr<GameThreadEntry>> snapshot; // game thread only
+            std::atomic<bool> dirty{false};
+            GameThreadEntry jobs_entry{0, "jobs", {}};
             uint64_t next_tick_id{1};
             std::atomic<std::thread::id> game_thread{};
             std::atomic<bool> installed{false};
@@ -75,13 +99,20 @@ namespace RC::Compat
                 if (std::chrono::steady_clock::now() - start > kDrainBudget) break;
             }
 
-            std::vector<GameThread::TickCallback> callbacks;
+            // Snapshot of the callback list, rebuilt only when callbacks are added or removed (no per-tick allocation).
+            if (s.dirty.exchange(false))
             {
                 std::lock_guard lock(s.mutex);
-                callbacks.reserve(s.ticks.size());
-                for (auto& [id, cb] : s.ticks) callbacks.push_back(cb);
+                s.snapshot.clear();
+                for (auto& entry : s.entries) s.snapshot.push_back(entry);
             }
-            for (auto& cb : callbacks) run_guarded([&] { cb(dt); });
+            for (auto& entry : s.snapshot)
+            {
+                const auto begin = std::chrono::steady_clock::now();
+                run_guarded([&] { entry->callback(dt); });
+                entry->record(std::chrono::steady_clock::now() - begin);
+            }
+            s.jobs_entry.record(std::chrono::steady_clock::now() - start);
         }
     } // namespace
 
@@ -147,12 +178,13 @@ namespace RC::Compat
         return sync->cv.wait_for(lock, timeout, [&] { return sync->done; });
     }
 
-    auto GameThread::AddTick(TickCallback callback) -> uint64_t
+    auto GameThread::AddTick(TickCallback callback, std::string name) -> uint64_t
     {
         auto& s = state();
         std::lock_guard lock(s.mutex);
         const uint64_t id = s.next_tick_id++;
-        s.ticks.emplace(id, std::move(callback));
+        s.entries.push_back(std::make_shared<GameThreadEntry>(id, name.empty() ? "tick" + std::to_string(id) : std::move(name), std::move(callback)));
+        s.dirty = true;
         return id;
     }
 
@@ -160,7 +192,29 @@ namespace RC::Compat
     {
         auto& s = state();
         std::lock_guard lock(s.mutex);
-        s.ticks.erase(id);
+        s.entries.erase(std::remove_if(s.entries.begin(), s.entries.end(), [id](const auto& e) { return e->id == id; }), s.entries.end());
+        s.dirty = true;
+    }
+
+    auto GameThread::TickStats(bool reset) -> std::vector<TickStat>
+    {
+        auto& s = state();
+        std::vector<TickStat> out;
+        auto collect = [&](GameThreadEntry& e) {
+            const uint64_t calls = e.calls.load();
+            if (calls == 0) return;
+            out.push_back({e.name, static_cast<double>(e.total_ns.load()) / static_cast<double>(calls) / 1000.0, static_cast<double>(e.max_ns.load()) / 1000.0, calls});
+            if (reset)
+            {
+                e.total_ns = 0;
+                e.max_ns = 0;
+                e.calls = 0;
+            }
+        };
+        std::lock_guard lock(s.mutex);
+        collect(s.jobs_entry);
+        for (auto& e : s.entries) collect(*e);
+        return out;
     }
 
     auto GameThread::TickCount() -> uint64_t

@@ -57,6 +57,8 @@ namespace RC::Compat::Reflect
     RC_UE4SS_API auto FindFunctionByPath(const StringType& class_colon_function) -> UFunction*;
     RC_UE4SS_API auto FindProperty(UObject* object, const StringType& name) -> FProperty*;
     RC_UE4SS_API auto IsValidObject(const UObject* object) -> bool;
+    // Drops the cached property/function lookups. Called when the level changes.
+    RC_UE4SS_API auto ClearCaches() -> void;
 
     // ---- Struct fields -----------------------------------------------------------------------------
 

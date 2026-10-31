@@ -2,6 +2,10 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <excpt.h>
+#include <mutex>
+#include <string_view>
+#include <unordered_map>
 #include <format>
 #include <vector>
 
@@ -13,6 +17,7 @@
 #include <Unreal/Core/Containers/ScriptArray.hpp>
 #include <Unreal/FText.hpp>
 #include <Unreal/Property/FTextProperty.hpp>
+#include <Unreal/UObjectArray.hpp>
 #include <Unreal/UObjectGlobals.hpp>
 #include <Unreal/UnrealFlags.hpp>
 
@@ -68,7 +73,7 @@ namespace RC::Compat::Reflect
 
     // ---- Lookup ----------------------------------------------------------------------------------
 
-    auto FindClass(const StringType& name) -> UClass*
+    static auto FindClassUncached(const StringType& name) -> UClass*
     {
         if (name.empty()) return nullptr;
         if (name.find(L'/') != StringType::npos) return UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, name);
@@ -90,7 +95,7 @@ namespace RC::Compat::Reflect
         return cls ? cls->GetClassDefaultObject() : nullptr;
     }
 
-    auto FindFunction(UObject* object, const StringType& name) -> UFunction*
+    static auto FindFunctionUncached(UObject* object, const StringType& name) -> UFunction*
     {
         if (!object || name.empty()) return nullptr;
         return object->GetFunctionByNameInChain(name.c_str());
@@ -115,15 +120,116 @@ namespace RC::Compat::Reflect
         return nullptr;
     }
 
-    auto FindProperty(UObject* object, const StringType& name) -> FProperty*
+    static auto FindPropertyUncached(UObject* object, const StringType& name) -> FProperty*
     {
         if (!object) return nullptr;
         return find_by_name(object->GetClassPrivate(), name);
     }
 
+    // ---- Lookup caches -----------------------------------------------------------------------------
+    //
+    // Property, function and class lookups happen every frame for cheats that hold a value, and the uncached versions
+    // walk every property of the class building a string per property (or build "/Script/Engine.<Name>" paths and
+    // search the object hash). Results are cached per class and per name; the property/function caches are dropped
+    // when the level changes (ClearCaches), because the classes behind them may be unloaded.
+    namespace
+    {
+        struct WideHash
+        {
+            using is_transparent = void;
+            size_t operator()(std::wstring_view s) const { return std::hash<std::wstring_view>{}(s); }
+        };
+        struct WideEqual
+        {
+            using is_transparent = void;
+            bool operator()(std::wstring_view a, std::wstring_view b) const { return a == b; }
+        };
+        template <typename T>
+        using NameMap = std::unordered_map<StringType, T, WideHash, WideEqual>;
+
+        std::mutex g_cache_mutex;
+        std::unordered_map<UStruct*, NameMap<FProperty*>> g_property_cache;
+        std::unordered_map<UStruct*, NameMap<UFunction*>> g_function_cache;
+        NameMap<UClass*> g_class_cache;
+    } // namespace
+
+    auto ClearCaches() -> void
+    {
+        std::lock_guard lock(g_cache_mutex);
+        g_property_cache.clear();
+        g_function_cache.clear();
+    }
+
+    auto FindClass(const StringType& name) -> UClass*
+    {
+        {
+            std::lock_guard lock(g_cache_mutex);
+            if (auto it = g_class_cache.find(std::wstring_view(name)); it != g_class_cache.end() && IsValidObject(it->second)) return it->second;
+        }
+        UClass* cls = FindClassUncached(name);
+        if (cls)
+        {
+            std::lock_guard lock(g_cache_mutex);
+            g_class_cache[name] = cls;
+        }
+        return cls;
+    }
+
+    auto FindFunction(UObject* object, const StringType& name) -> UFunction*
+    {
+        if (!object || name.empty()) return nullptr;
+        UStruct* cls = object->GetClassPrivate();
+        {
+            std::lock_guard lock(g_cache_mutex);
+            if (auto c = g_function_cache.find(cls); c != g_function_cache.end())
+            {
+                if (auto it = c->second.find(std::wstring_view(name)); it != c->second.end()) return it->second;
+            }
+        }
+        UFunction* fn = FindFunctionUncached(object, name);
+        std::lock_guard lock(g_cache_mutex);
+        g_function_cache[cls][name] = fn;
+        return fn;
+    }
+
+    auto FindProperty(UObject* object, const StringType& name) -> FProperty*
+    {
+        if (!object) return nullptr;
+        UStruct* cls = object->GetClassPrivate();
+        {
+            std::lock_guard lock(g_cache_mutex);
+            if (auto c = g_property_cache.find(cls); c != g_property_cache.end())
+            {
+                if (auto it = c->second.find(std::wstring_view(name)); it != c->second.end()) return it->second;
+            }
+        }
+        FProperty* property = FindPropertyUncached(object, name);
+        std::lock_guard lock(g_cache_mutex);
+        g_property_cache[cls][name] = property;
+        return property;
+    }
+
+    // O(1) liveness test: the object's own index must point back at it in the global object array, and it must not
+    // be unreachable or pending destruction. (UObject::IsReal does the same by scanning the whole array linearly,
+    // which costs ~0.5 ms with the object counts of a large game - far too slow for per-call and per-frame use.)
+    static auto is_live_object(const UObject* object) -> bool
+    {
+        __try
+        {
+            const int32_t index = object->GetInternalIndex();
+            if (index < 0 || index >= FUObjectArray::GetNumElements()) return false;
+            FUObjectItem* item = FUObjectArray::IndexToObject(index);
+            return item && item->GetUObject() == object && !item->IsUnreachable() && !item->IsPendingKill();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false; // the memory behind a stale pointer is gone
+        }
+    }
+
     auto IsValidObject(const UObject* object) -> bool
     {
-        return object && UObject::IsReal(object);
+        return object && is_live_object(object);
     }
 
     // ---- Struct fields ---------------------------------------------------------------------------

@@ -9,6 +9,8 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <string>
+#include <vector>
 
 #include <Common.hpp>
 
@@ -33,8 +35,20 @@ namespace RC::Compat
         static auto Run(Job job, std::chrono::milliseconds timeout = std::chrono::milliseconds{2000}) -> bool;
 
         // Called every engine tick on the game thread. Returns an id for RemoveTick.
-        static auto AddTick(TickCallback callback) -> uint64_t;
+        // `name` labels the callback in TickStats().
+        static auto AddTick(TickCallback callback, std::string name = {}) -> uint64_t;
         static auto RemoveTick(uint64_t id) -> void;
+        struct TickStat
+        {
+            std::string name;
+            double average_us{};
+            double max_us{};
+            uint64_t calls{};
+        };
+        // Time spent per tick callback since the last reset (the queued-job drain is reported as "jobs"). Used to keep
+        // mods honest about their per-frame cost.
+        [[nodiscard]] static auto TickStats(bool reset = false) -> std::vector<TickStat>;
+
         // Engine ticks seen since Install (cheap liveness / timing signal for tests).
         [[nodiscard]] static auto TickCount() -> uint64_t;
     };

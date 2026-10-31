@@ -237,6 +237,65 @@ steps.push_back({"target selection + availability", 30, [](int) {               
                                  return pass(std::format("teleported {:.0f}uu and returned", std::hypot(400.0, 400.0)));
                              }});
 
+            steps.push_back({"microbench (informational)", 600, [](int) {
+                                 using clock = std::chrono::steady_clock;
+                                 auto& adapter = AdapterRegistry::Get();
+                                 UObject* p = pawn();
+                                 FProperty* prop = Reflect::FindProperty(p, L"bCanBeDamaged");
+                                 auto time_us = [](int n, auto&& fn) {
+                                     const auto t0 = clock::now();
+                                     for (int i = 0; i < n; ++i) fn();
+                                     return std::chrono::duration<double, std::micro>(clock::now() - t0).count() / n;
+                                 };
+                                 std::string out;
+                                 out += std::format("IsValidObject {:.2f}us; ", time_us(2000, [&] { (void)Reflect::IsValidObject(p); }));
+                                 out += std::format("FindProperty(cached) {:.2f}us; ", time_us(2000, [&] { (void)Reflect::FindProperty(p, L"bCanBeDamaged"); }));
+                                 out += std::format("GetNumber {:.2f}us; ", time_us(2000, [&] { (void)Reflect::GetNumber(prop, prop->ContainerPtrToValuePtr<void>(p)); }));
+                                 out += std::format("world() {:.2f}us; ", time_us(200, [&] { (void)adapter.world(); }));
+                                 out += std::format("player_controller() {:.2f}us; ", time_us(200, [&] { (void)adapter.player_controller(); }));
+                                 out += std::format("player_pawn() {:.2f}us; ", time_us(200, [&] { (void)adapter.player_pawn(); }));
+                                 out += std::format("actor_location {:.2f}us; ", time_us(200, [&] { (void)adapter.actor_location(p); }));
+                                 out += std::format("actor_rotation {:.2f}us; ", time_us(200, [&] { (void)adapter.actor_rotation(p); }));
+                                 out += std::format("current_level_name {:.2f}us; ", time_us(200, [&] { (void)adapter.current_level_name(); }));
+                                 out += std::format("resolve player_pawn {:.2f}us; ", time_us(200, [&] { (void)resolve_targets("player_pawn"); }));
+                                 out += std::format("resolve class:Pawn {:.2f}us; ", time_us(50, [&] { (void)resolve_targets("class:Pawn"); }));
+                                 return pass(out);
+                             }});
+
+            // Frame-cost budget: with a typical set of cheats enabled the toolkit must stay invisible in the frame time.
+            steps.push_back({"performance: cheats enabled for 15 s", 100000, [](int tick) {
+                                 static std::vector<CheatDef> cheats;
+                                 static std::chrono::steady_clock::time_point began;
+                                 auto& engine = TrainerEngine::get();
+                                 if (tick == 0)
+                                 {
+                                     ActionDef a;
+                                     a.target = "player_pawn";
+                                     auto freeze_bool = a, freeze_num = a, scale_num = a, block = a;
+                                     freeze_bool.kind = "freeze_property"; freeze_bool.property = "bCanBeDamaged"; freeze_bool.value = "false";
+                                     freeze_num.kind = "freeze_property"; freeze_num.property = "BaseEyeHeight"; freeze_num.value = "64"; freeze_num.mode = "at_least";
+                                     scale_num.kind = "scale_property"; scale_num.property = "BaseEyeHeight"; scale_num.scale = 1.0;
+                                     block.kind = "block_function"; block.function = "ReceiveAnyDamage";
+                                     cheats = {make_cheat("perf_a", "toggle", {freeze_bool}), make_cheat("perf_b", "toggle", {freeze_num}),
+                                               make_cheat("perf_c", "slider", {scale_num}), make_cheat("perf_d", "toggle", {block, freeze_bool})};
+                                     for (auto& c : cheats) { std::string status; engine.enable_now(c, 1.0, status); }
+                                     (void)GameThread::TickStats(true);
+                                     began = std::chrono::steady_clock::now();
+                                     return pending();
+                                 }
+                                 if (std::chrono::steady_clock::now() - began < std::chrono::seconds{15}) return pending();
+                                 auto stats = GameThread::TickStats(true);
+                                 for (auto& c : cheats) { std::string status; engine.disable_now(c, status); }
+                                 std::string detail;
+                                 bool over_budget = false;
+                                 for (const auto& s : stats)
+                                 {
+                                     detail += std::format("{} avg {:.1f}us max {:.0f}us; ", s.name, s.average_us, s.max_us);
+                                     if (s.name != "selftest" && s.name != "jobs" && (s.average_us > 150.0 || s.max_us > 4000.0)) over_budget = true;
+                                 }
+                                 return over_budget ? fail("over the frame budget: " + detail) : pass(detail);
+                             }});
+
             steps.push_back({"waypoint persistence", 5, [&r, root](int) {
                                  auto& store = WaypointStore::get();
                                  auto snap = Session::get().refresh_now();
@@ -510,7 +569,7 @@ steps.push_back({"target selection + availability", 30, [](int) {               
         std::filesystem::create_directories(Session::get().root(), ec);
         std::ofstream(g_runner->log_path, std::ios::trunc) << "ToolkitMod self test\n";
         build_steps(*g_runner);
-        g_runner->tick_id = GameThread::AddTick(on_tick);
+        g_runner->tick_id = GameThread::AddTick(on_tick, "selftest");
         log_line("self test started");
     }
 } // namespace RC::Toolkit::SelfTest

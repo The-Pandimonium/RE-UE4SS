@@ -74,6 +74,15 @@ namespace RC::Toolkit
             std::unordered_map<Unreal::UObject*, double> base_numbers{};
             std::unordered_map<Unreal::UObject*, std::wstring> base_texts{};
             double next_refresh{0.0};
+            // Per-tick fast path: properties are resolved when the objects are refreshed, the wanted value is parsed once.
+            std::wstring property_w{};
+            std::unordered_map<Unreal::UObject*, Unreal::FProperty*> props{};
+            bool value_ready{false};
+            double value_key{0.0};
+            bool wanted_parsed{false};
+            double wanted{0.0};
+            std::string wanted_text{};
+            double next_text_write{0.0};
         };
         struct CheatRuntime
         {
@@ -116,6 +125,16 @@ namespace RC::Toolkit
         std::map<std::string, CheatRuntime> m_runtime;
         std::vector<BlockEntry> m_blocks;
         std::map<std::string, Availability> m_availability;
+        struct AvailExpr
+        {
+            std::string target{};
+            std::string select{};
+            int index{0};
+            int count{-1};
+            double evaluated_at{-1e9};
+        };
+        std::map<std::string, AvailExpr> m_avail_exprs;
+        bool m_avail_dirty{true};
         double m_next_availability{0.0};
         double m_clock{0.0};
         std::atomic<bool> m_has_blocks{false};

@@ -136,3 +136,12 @@ namespace RC::Toolkit
         return m_data.waypoints;
     }
 } // namespace RC::Toolkit
+
+namespace RC::Toolkit
+{
+    auto WaypointStore::any_visible() const -> bool
+    {
+        std::lock_guard lock(m_mutex);
+        return std::any_of(m_data.waypoints.begin(), m_data.waypoints.end(), [](const Waypoint& w) { return w.visible; });
+    }
+} // namespace RC::Toolkit

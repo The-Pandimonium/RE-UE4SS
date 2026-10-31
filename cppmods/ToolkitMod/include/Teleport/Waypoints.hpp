@@ -49,6 +49,7 @@ namespace RC::Toolkit
         // Waypoints that apply to `level` (its own plus the global ones).
         auto for_level(const std::string& level) const -> std::vector<Waypoint>;
         auto all() const -> std::vector<Waypoint>;
+        auto any_visible() const -> bool;
 
       private:
         mutable std::mutex m_mutex;

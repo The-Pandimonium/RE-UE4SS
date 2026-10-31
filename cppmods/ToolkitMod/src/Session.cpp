@@ -28,7 +28,7 @@ namespace RC::Toolkit
             m_installed = true;
         }
         GameThread::Install();
-        GameThread::AddTick([this](float dt) { tick(dt); });
+        GameThread::AddTick([this](float dt) { tick(dt); }, "session");
     }
 
     auto Session::load_config() -> void
@@ -123,7 +123,7 @@ namespace RC::Toolkit
     auto Session::tick(float dt) -> void
     {
         m_since_update += dt;
-        if (m_since_update < 0.1) return;
+        if (m_since_update < 0.25) return;
         m_since_update = 0.0;
         try
         {
