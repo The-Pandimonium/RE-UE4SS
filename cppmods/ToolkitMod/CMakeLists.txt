@@ -12,6 +12,7 @@ add_library(${TARGET} SHARED
         src/Trainer/Inspect.cpp
         src/Teleport/Waypoints.cpp
         src/Teleport/WaypointRenderer.cpp
+        src/Teleport/WaypointMarkers.cpp
         src/UI/TrainerUI.cpp
         src/UI/TeleportUI.cpp
         src/UI/LevelsUI.cpp

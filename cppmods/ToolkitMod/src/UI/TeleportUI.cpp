@@ -78,9 +78,9 @@ namespace RC::Toolkit::UI
         }
         if (changed) session.update_config(config);
         auto& renderer = WaypointRenderer::get();
-        ImGui::TextDisabled("%s   |   HUD frames: %llu   markers drawn: %llu   failures: %llu", renderer.hud_status().c_str(), renderer.hud_frames(), renderer.markers_drawn(), renderer.draw_failures());
-        if (renderer.hud_frames() == 0)
-            ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.3f, 1), "The game has not called the HUD yet - markers need a HUD class and a loaded level.");
+        ImGui::TextDisabled("Marker actors in world: %d (spawn failures %llu)   |   %s   |   HUD frames: %llu   drawn: %llu", renderer.marker_actor_count(), renderer.marker_spawn_failures(), renderer.hud_status().c_str(), renderer.hud_frames(), renderer.markers_drawn());
+        if (renderer.marker_actor_count() == 0)
+            ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.3f, 1), "No marker actors yet: they appear ~10 s after a level finishes loading, for waypoints with Show ticked.");
 
         // ---- Add waypoint ----
         ImGui::Separator();

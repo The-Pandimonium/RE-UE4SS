@@ -40,10 +40,14 @@ engine classes.
 
 ## In-game waypoint markers
 
-Shipping builds strip `DrawDebug*`, so markers are painted through the game's HUD (`ReceiveDrawHUD` pre-hook +
-`HUD::Project/DrawRect/DrawText`). If a game has no HUD, one is created with `PlayerController::ClientSetHUD`.
+Visible waypoints are shown as **marker actors**: a beam and a ball built from `/Engine/BasicShapes`, no collision, created
+through reflection and reconciled once a second. They are only spawned after the player controller has existed for
+10 s, because spawning while a level loads hangs Voices of the Void. Optionally the game's HUD is used for labels, but
+Voices of the Void's HUD never gets a canvas (`ReceiveDrawHUD` never fires), so actors are the reliable path.
+Shipping builds strip `DrawDebug*`, which is why neither debug lines nor text are used.
 
 ## Self test
+
 
 Set `"selftest": true` in `Mods/ToolkitMod/config.json` and start the game; results go to
 `Mods/ToolkitMod/selftest.log` (PASS / FAIL / SKIP per feature). `"selftest_level"`: a level to travel to first,
@@ -54,7 +58,6 @@ Environment variable `TOOLKIT_SKIPENUM=1` skips the asset-registry level enumera
 
 * Calling `GetAllAssets` on the asset registry's class default object crashes the game (null read inside the engine).
   Fixed: the live registry is obtained from `AssetRegistryHelpers::GetAssetRegistry()`.
-* Travelling to large levels (e.g. `sb_area0`) directly from `preLoad` never finishes (game thread spins inside PhysX),
-  with or without this mod. Small maps (`sandbox/flatgrass`, `untitled_0`) load when travel is started from Lua.
-  Travel started by the toolkit itself (level switcher, self test) is **not yet reliable** in this game - under
-  investigation.
+* After loading any gameplay map from `preLoad` (`untitled_0`, `sandbox/flatgrass`, `sb_area0`), the game thread spins at
+  100% inside PhysX. It reproduces with UE4SS core only (no C++ mods), so it is not caused by the toolkit; whether it also
+  happens without UE4SS is untested. The main menu level loads and runs normally.

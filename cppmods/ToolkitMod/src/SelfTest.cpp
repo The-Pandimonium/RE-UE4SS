@@ -255,10 +255,12 @@ steps.push_back({"target selection + availability", 30, [](int) {               
                                  return pass("saved to " + (root / "data" / "waypoints.json").string());
                              }});
 
-            steps.push_back({"in-game waypoint markers", 600, [](int tick) {
+            steps.push_back({"in-game waypoint markers", 2400, [](int tick) {
                                  auto& renderer = WaypointRenderer::get();
-                                 if (tick < 240) return pending();
-                                 if (renderer.hud_frames() == 0) return fail("the game never called AHUD::ReceiveDrawHUD; " + renderer.hud_status());
+                                 if (tick < 1000) return pending(); // markers need ~10 s of stable world
+                                 if (renderer.marker_actor_count() > 0 && renderer.marker_spawn_failures() == 0)
+                                     return pass(std::format("{} marker actor(s) spawned in the world; HUD frames={} ({})", renderer.marker_actor_count(), renderer.hud_frames(), renderer.hud_status()));
+                                 if (renderer.hud_frames() == 0) return fail("no marker actors and the game never called AHUD::ReceiveDrawHUD; " + renderer.hud_status());
                                  if (renderer.markers_drawn() == 0)
                                      return fail(std::format("HUD frames={} but nothing drawn (marker behind camera or draw calls failing: {} failures)", renderer.hud_frames(), renderer.draw_failures()));
                                  return pass(std::format("hud frames={} markers drawn={} ({})", renderer.hud_frames(), renderer.markers_drawn(), renderer.hud_status()));

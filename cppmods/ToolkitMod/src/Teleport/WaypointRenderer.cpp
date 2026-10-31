@@ -33,12 +33,31 @@ namespace RC::Toolkit
     // Once a second: report the HUD state and create a HUD when markers are wanted but the game has none.
     auto WaypointRenderer::tick(float dt) -> void
     {
+        m_since_log += dt;
+        if (m_since_log >= 5.0)
+        {
+            m_since_log = 0.0;
+            Output::send<LogLevel::Normal>(STR("[ToolkitMod:Markers] {} | hud frames={} drawn={} behind={} projectFailed={} failures={} | marker actors={} spawnFailures={}\n"), ensure_str(hud_status()), m_hud_frames.load(), m_markers_drawn.load(), m_behind_camera.load(), m_project_failed.load(), m_draw_failures.load(), m_marker_count.load(), m_spawn_failures.load());
+        }
         m_since_check += dt;
         if (m_since_check < 1.0) return;
         m_since_check = 0.0;
 
         auto& adapter = Compat::AdapterRegistry::Get();
         UObject* pc = adapter.player_controller();
+        // The world counts as stable once the same player controller has existed for a while. Creating actors while a
+        // level is still loading is unsafe in some games (Voices of the Void hangs in PhysX), so the HUD fallback below
+        // waits for that.
+        if (!pc || pc != m_last_pc)
+        {
+            m_last_pc = pc;
+            m_stable_seconds = 0.0;
+            m_missing_hud_checks = 0;
+        }
+        else
+        {
+            m_stable_seconds += 1.0;
+        }
         std::string status;
         if (!pc)
         {
@@ -52,7 +71,8 @@ namespace RC::Toolkit
         else
         {
             status = "the game has no HUD";
-            const bool wanted = Session::get().config().hud_markers && !WaypointStore::get().all().empty();
+            ++m_missing_hud_checks;
+            const bool wanted = Session::get().config().hud_markers && !WaypointStore::get().all().empty() && m_stable_seconds >= 10.0 && m_missing_hud_checks >= 3;
             if (wanted)
             {
                 UClass* hud_class = Reflect::FindClass(L"HUD");
@@ -69,8 +89,12 @@ namespace RC::Toolkit
                 }
             }
         }
-        std::lock_guard lock(m_status_mutex);
-        m_status = status;
+        {
+            std::lock_guard lock(m_status_mutex);
+            m_status = status;
+        }
+        // Actor markers only once the world has been stable for a while (spawning during level load is unsafe).
+        if (pc && m_stable_seconds >= 10.0) reconcile_markers();
     }
 
     auto WaypointRenderer::install() -> void
@@ -133,7 +157,8 @@ namespace RC::Toolkit
                 continue;
             }
             auto screen = proj.GetVec3(L"ReturnValue");
-            if (!screen || screen->z <= 0.0) continue; // behind the camera
+            if (!screen) { m_project_failed.fetch_add(1, std::memory_order_relaxed); continue; }
+            if (screen->z <= 0.0) { m_behind_camera.fetch_add(1, std::memory_order_relaxed); continue; } // behind the camera
 
             const double sx = screen->x, sy = screen->y;
             const Reflect::Color color{wp.color[0], wp.color[1], wp.color[2], 1.0f};
