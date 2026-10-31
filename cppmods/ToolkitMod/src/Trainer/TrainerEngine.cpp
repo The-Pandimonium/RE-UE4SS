@@ -201,8 +201,19 @@ namespace RC::Toolkit
         const auto& trainer = m_trainers[ti];
         const auto& cheat = trainer.cheats[ci];
         auto it = m_runtime.find(key_of(trainer, cheat));
-        if (it == m_runtime.end()) return {false, cheat.default_value, {}};
-        return {it->second.enabled, it->second.value, it->second.status};
+        CheatState out{false, cheat.default_value, {}};
+        if (auto it = m_runtime.find(key_of(trainer, cheat)); it != m_runtime.end())
+        {
+            out.enabled = it->second.enabled;
+            out.value = it->second.value;
+            out.status = it->second.status;
+        }
+        if (auto av = m_availability.find(key_of(trainer, cheat)); av != m_availability.end())
+        {
+            out.available = av->second.available;
+            out.unavailable_reason = av->second.reason;
+        }
+        return out;
     }
 
     auto TrainerEngine::set_enabled(size_t ti, size_t ci, bool enabled) -> void
@@ -220,6 +231,14 @@ namespace RC::Toolkit
             std::lock_guard lock(m_mutex);
             auto& rt = runtime_for(key, cheat.actions.size());
             if (enabled == rt.enabled) return;
+            if (enabled)
+            {
+                if (auto av = m_availability.find(key); av != m_availability.end() && !av->second.available)
+                {
+                    rt.status = "unavailable: " + av->second.reason;
+                    return;
+                }
+            }
             if (enabled)
             {
                 if (rt.value == 1.0 && cheat.type == "slider") rt.value = cheat.default_value;
@@ -269,6 +288,12 @@ namespace RC::Toolkit
         }
         const std::string key = key_of(trainer, cheat);
         GameThread::Post([this, key, cheat, value] {
+            if (auto av = m_availability.find(key); av != m_availability.end() && !av->second.available)
+            {
+                std::lock_guard lock(m_mutex);
+                runtime_for(key, cheat.actions.size()).status = "unavailable: " + av->second.reason;
+                return;
+            }
             std::string status;
             bool ok = true;
             for (const auto& action : cheat.actions) ok = run_one_shot(action, value, false, status) && ok;
@@ -347,7 +372,7 @@ namespace RC::Toolkit
 
     auto TrainerEngine::refresh_objects(const ActionDef& action, ActionRuntime& art) -> void
     {
-        art.objects = resolve_targets(action.target);
+        art.objects = resolve_targets(action.target, action.select, action.index);
         art.next_refresh = m_clock + kRefreshSeconds;
     }
 
@@ -371,7 +396,7 @@ namespace RC::Toolkit
             return false;
         }
 
-        auto objects = resolve_targets(action.target);
+        auto objects = resolve_targets(action.target, action.select, action.index);
         if (objects.empty())
         {
             status = "target '" + action.target + "' not found";
@@ -464,6 +489,8 @@ namespace RC::Toolkit
                 entry.cheat_key = "";
                 entry.function = action.function.empty() ? action.property : action.function;
                 entry.target = action.target;
+                entry.select = action.select;
+                entry.index = action.index;
                 {
                     std::string class_part, name_part;
                     split_function_path(entry.function, class_part, name_part);
@@ -566,13 +593,14 @@ namespace RC::Toolkit
     {
         std::lock_guard lock(m_mutex);
         m_clock += dt;
+        if (m_clock >= m_next_availability) refresh_availability();
 
         // Resolve block targets on a timer so the ProcessEvent hook never has to touch the engine itself.
         for (auto& block : m_blocks)
         {
             if (m_clock >= block.next_refresh)
             {
-                block.objects = resolve_targets(block.target);
+                block.objects = resolve_targets(block.target, block.select, block.index);
                 block.next_refresh = m_clock + kRefreshSeconds;
             }
         }
@@ -589,7 +617,7 @@ namespace RC::Toolkit
                     ActionRuntime& art = rt.actions[i];
                     if (m_clock >= art.next_refresh)
                     {
-                        auto fresh = resolve_targets(action.target);
+                        auto fresh = resolve_targets(action.target, action.select, action.index);
                         for (UObject* obj : fresh)
                         {
                             if (art.base_numbers.contains(obj) || art.base_texts.contains(obj)) continue;
@@ -674,5 +702,59 @@ namespace RC::Toolkit
             data.PreventOriginalFunctionCall();
             return;
         }
+    }
+} // namespace RC::Toolkit
+
+namespace RC::Toolkit
+{
+    // Works out, once a second, which cheats have something to act on in the current level. A cheat that targets a
+    // class with no live objects (or "the Nth" of a class that has fewer) is reported unavailable so the UI can
+    // grey it out instead of letting it fail silently.
+    auto TrainerEngine::refresh_availability() -> void
+    {
+        m_next_availability = m_clock + 1.0;
+        std::map<std::string, size_t> counts;
+        std::map<std::string, Availability> fresh;
+        for (const auto& trainer : m_trainers)
+        {
+            for (const auto& cheat : trainer.cheats)
+            {
+                Availability result;
+                for (const auto& action : cheat.actions)
+                {
+                    if (action.kind == "console" || action.kind == "time_scale") continue;
+                    if (action.kind == "block_function" && (action.target.empty() || action.target == "any")) continue;
+                    const std::string cache_key = action.target + "|" + action.select + "|" + std::to_string(action.index);
+                    auto it = counts.find(cache_key);
+                    if (it == counts.end()) it = counts.emplace(cache_key, resolve_targets(action.target, action.select, action.index).size()).first;
+                    if (it->second == 0)
+                    {
+                        result.available = false;
+                        result.reason = "no live objects for '" + action.target + "'" + (action.select == "all" ? "" : " (" + action.select + ")") + " in this level";
+                        break;
+                    }
+                }
+                fresh[key_of(trainer, cheat)] = std::move(result);
+            }
+        }
+        m_availability = std::move(fresh);
+    }
+} // namespace RC::Toolkit
+
+namespace RC::Toolkit
+{
+    auto TrainerEngine::check_available(const CheatDef& cheat, std::string& reason) -> bool
+    {
+        for (const auto& action : cheat.actions)
+        {
+            if (action.kind == "console" || action.kind == "time_scale") continue;
+            if (action.kind == "block_function" && (action.target.empty() || action.target == "any")) continue;
+            if (resolve_targets(action.target, action.select, action.index).empty())
+            {
+                reason = "no live objects for '" + action.target + "'" + (action.select == "all" ? "" : " (" + action.select + ")");
+                return false;
+            }
+        }
+        return true;
     }
 } // namespace RC::Toolkit

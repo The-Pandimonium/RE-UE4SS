@@ -32,7 +32,10 @@ See `include/Trainer/TrainerModel.hpp` for the full schema. A cheat is a toggle,
 `set_property`, `freeze_property` (`set` / `at_least` / `at_most`), `scale_property`, `call_function`,
 `block_function`, `console`, `time_scale`. Targets: `player_pawn`, `player_controller`, `game_mode`, `game_state`,
 `world`, `world_settings`, `hud`, `class:<Name>`, `object:<path>`, with `.Property` chains
-(`player_pawn.CharacterMovement`). `assets/trainers/EngineEssentials.json` is a working example built only on stock
+(`player_pawn.CharacterMovement`). Targets are **classes**, not objects (objects are recreated on every level load); each action
+has `select`: `all` (every instance), `first`, `nearest` (to the player) or `index` (the Nth). The creator's **Pick class...**
+lists the classes that currently have live objects. A cheat whose targets do not exist in the current level is greyed out and
+cannot be switched on or pressed. `assets/trainers/EngineEssentials.json` is a working example built only on stock
 engine classes.
 
 ## In-game waypoint markers

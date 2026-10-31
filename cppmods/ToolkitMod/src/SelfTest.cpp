@@ -23,6 +23,8 @@
 #include <Session.hpp>
 #include <Teleport/WaypointRenderer.hpp>
 #include <Teleport/Waypoints.hpp>
+#include <Trainer/Inspect.hpp>
+#include <Trainer/TargetResolver.hpp>
 #include <Trainer/TrainerEngine.hpp>
 
 namespace RC::Toolkit::SelfTest
@@ -201,6 +203,21 @@ namespace RC::Toolkit::SelfTest
                              }});
 
             steps.push_back({"settle (let the level finish loading)", 600, [](int tick) { return tick >= 180 ? pass() : pending(); }});
+
+            steps.push_back({"class picker data", 30, [](int) {
+                                 auto rows = list_live_classes(false);
+                                 if (rows.empty()) return fail("no live actor classes listed");
+                                 UObject* p = pawn();
+                                 const std::string pawn_class = p ? to_string(p->GetClassPrivate()->GetName()) : "";
+                                 bool found = false;
+                                 for (const auto& row : rows) found = found || row.name == pawn_class;
+                                 if (!found) return fail("pawn class " + pawn_class + " missing from the picker");
+                                 auto targets = resolve_targets("class:" + pawn_class);
+                                 if (targets.empty() || targets.front() != p) return fail("class:" + pawn_class + " did not resolve to the pawn");
+                                 auto all = list_live_classes(true);
+                                 return pass(std::format("{} actor classes, {} with non-actors; class:{} resolves to the live pawn", rows.size(), all.size(), pawn_class));
+                             }});
+steps.push_back({"target selection + availability", 30, [](int) {                                 UObject* p = pawn();                                 const std::string cls = p ? to_string(p->GetClassPrivate()->GetName()) : "";                                 const auto all = resolve_targets("class:" + cls, "all");                                 const auto first = resolve_targets("class:" + cls, "first");                                 const auto nearest = resolve_targets("class:" + cls, "nearest");                                 const auto far_index = resolve_targets("class:" + cls, "index", 999);                                 if (all.empty() || first.size() != 1 || nearest.size() != 1 || !far_index.empty())                                     return fail(std::format("all={} first={} nearest={} index999={}", all.size(), first.size(), nearest.size(), far_index.size()));                                 ActionDef present, missing;                                 present.kind = missing.kind = "set_property";                                 present.target = "class:" + cls;                                 missing.target = "class:ThisClassDoesNotExist_C";                                 std::string why_present, why_missing;                                 auto& engine = TrainerEngine::get();                                 const bool a = engine.check_available(make_cheat("avail_present", "toggle", {present}), why_present);                                 const bool b = engine.check_available(make_cheat("avail_missing", "toggle", {missing}), why_missing);                                 if (!a) return fail("existing class reported unavailable: " + why_present);                                 if (b) return fail("missing class reported available");                                 return pass(std::format("all={} first=1 nearest=1 index999=0; missing class -> '{}'", all.size(), why_missing));                             }});
 
             steps.push_back({"teleport and back", 30, [&r](int) {
                                  auto& adapter = AdapterRegistry::Get();

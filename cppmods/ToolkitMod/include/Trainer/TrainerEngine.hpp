@@ -20,6 +20,10 @@ namespace RC::Toolkit
         bool enabled{false};
         double value{1.0};
         std::string status{};
+        // False while the cheat has nothing to act on in the current level (e.g. its target class has no live objects).
+        // Such a cheat can be switched off but not on / pressed.
+        bool available{true};
+        std::string unavailable_reason{};
     };
 
     class TrainerEngine
@@ -53,10 +57,17 @@ namespace RC::Toolkit
         // ---- Synchronous variants for tests: must be called on the game thread ----
         auto enable_now(const CheatDef& cheat, double value, std::string& status) -> bool;
         auto disable_now(const CheatDef& cheat, std::string& status) -> void;
+        // Game thread: does every target of the cheat exist right now? `reason` explains a "no".
+        auto check_available(const CheatDef& cheat, std::string& reason) -> bool;
 
       private:
         TrainerEngine() = default;
 
+        struct Availability
+        {
+            bool available{true};
+            std::string reason{};
+        };
         struct ActionRuntime
         {
             std::vector<Unreal::UObject*> objects{};
@@ -78,6 +89,8 @@ namespace RC::Toolkit
             std::string function{};
             Unreal::FName function_name{}; // parsed once; the ProcessEvent hook must not build strings per call
             std::string target{};
+            std::string select{"all"};
+            int index{0};
             std::string return_value{};
             std::vector<Unreal::UObject*> objects{};
             double next_refresh{0.0};
@@ -94,6 +107,7 @@ namespace RC::Toolkit
         auto on_process_event(Unreal::Hook::TCallbackIterationData<void>& data, Unreal::UObject* context, Unreal::UFunction* function, void* params) -> void;
         auto refresh_objects(const ActionDef& action, ActionRuntime& art) -> void;
         auto remove_blocks(const std::string& cheat_key) -> void;
+        auto refresh_availability() -> void;
 
         std::filesystem::path m_directory;
         mutable std::recursive_mutex m_mutex;
@@ -101,6 +115,8 @@ namespace RC::Toolkit
         std::vector<std::string> m_stems;
         std::map<std::string, CheatRuntime> m_runtime;
         std::vector<BlockEntry> m_blocks;
+        std::map<std::string, Availability> m_availability;
+        double m_next_availability{0.0};
         double m_clock{0.0};
         std::atomic<bool> m_has_blocks{false};
         bool m_installed{false};

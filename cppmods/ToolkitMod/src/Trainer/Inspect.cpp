@@ -1,12 +1,16 @@
 #include <Trainer/Inspect.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <unordered_map>
 
 #include <EngineCompat/GameThread.hpp>
 #include <EngineCompat/Reflect.hpp>
 #include <Helpers/String.hpp>
 #include <Trainer/TargetResolver.hpp>
+#include <Unreal/AActor.hpp>
 #include <Unreal/CoreUObject/UObject/Class.hpp>
+#include <Unreal/UObjectGlobals.hpp>
 #include <Unreal/CoreUObject/UObject/UnrealType.hpp>
 #include <Unreal/UnrealFlags.hpp>
 
@@ -79,5 +83,40 @@ namespace RC::Toolkit
             }
         });
         return info;
+    }
+} // namespace RC::Toolkit
+
+namespace RC::Toolkit
+{
+    auto list_live_classes(bool include_non_actors) -> std::vector<ClassRow>
+    {
+        std::vector<ClassRow> rows;
+        Compat::GameThread::Run(
+                [&] {
+                    std::unordered_map<UClass*, size_t> index;
+                    UClass* actor_class = AActor::StaticClass();
+                    UObjectGlobals::ForEachUObject([&](UObject* obj, int32_t, int32_t) {
+                        if (!obj || obj->HasAnyFlags(RF_ClassDefaultObject)) return LoopAction::Continue;
+                        UClass* cls = obj->GetClassPrivate();
+                        if (!cls) return LoopAction::Continue;
+                        auto it = index.find(cls);
+                        if (it != index.end())
+                        {
+                            ++rows[it->second].instances;
+                            return LoopAction::Continue;
+                        }
+                        const bool is_actor = cls->IsChildOf(actor_class);
+                        if (!is_actor && !include_non_actors) return LoopAction::Continue;
+                        const std::string name = to_string(cls->GetName());
+                        // Blueprint editing artefacts, never targets.
+                        if (name.starts_with("SKEL_") || name.starts_with("REINST_") || name.starts_with("HOTRELOADED_")) return LoopAction::Continue;
+                        index.emplace(cls, rows.size());
+                        rows.push_back({name, to_string(cls->GetPathName()), 1, is_actor});
+                        return LoopAction::Continue;
+                    });
+                    std::sort(rows.begin(), rows.end(), [](const ClassRow& a, const ClassRow& b) { return a.name < b.name; });
+                },
+                std::chrono::milliseconds{10000});
+        return rows;
     }
 } // namespace RC::Toolkit

@@ -58,6 +58,13 @@ namespace RC::Toolkit::UI
             size_t browse_action{0};
             bool browse_functions{false};
             bool open_browser{false};
+
+            // Class picker popup
+            std::vector<ClassRow> classes{};
+            std::string class_filter{};
+            size_t class_action{0};
+            bool include_non_actors{false};
+            bool open_classes{false};
         };
 
         auto creator() -> CreatorState&
@@ -101,6 +108,10 @@ namespace RC::Toolkit::UI
                         CheatState state = engine.state(ti, ci);
                         ImGui::PushID(static_cast<int>(ci));
                         const char* label = cheat.label.empty() ? cheat.id.c_str() : cheat.label.c_str();
+                        // A cheat with nothing to act on in this level cannot be switched on or pressed (it can still be
+                        // switched off if it was already on).
+                        const bool blocked = !state.available && !state.enabled;
+                        if (blocked) ImGui::BeginDisabled();
                         if (cheat.type == "button")
                         {
                             if (ImGui::Button(label)) engine.press(ti, ci);
@@ -118,8 +129,15 @@ namespace RC::Toolkit::UI
                                     engine.set_value(ti, ci, value);
                             }
                         }
-                        if (ImGui::IsItemHovered() && !cheat.description.empty()) ImGui::SetTooltip("%s", cheat.description.c_str());
-                        if (!state.status.empty() && state.status != "off")
+                        if (blocked)
+                        {
+                            ImGui::EndDisabled();
+                            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Not available: %s", state.unavailable_reason.c_str());
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("(no target in this level)");
+                        }
+                        else if (ImGui::IsItemHovered() && !cheat.description.empty()) ImGui::SetTooltip("%s", cheat.description.c_str());
+                        if (!state.status.empty() && state.status != "off" && !blocked)
                         {
                             ImGui::SameLine();
                             ImGui::TextColored(status_color(state.status), "%s", state.status.c_str());
@@ -139,6 +157,81 @@ namespace RC::Toolkit::UI
             cs.info = inspect_target(cs.info_target);
             cs.filter.clear();
             cs.open_browser = true;
+        }
+
+        auto open_class_picker(CreatorState& cs, size_t action_index) -> void
+        {
+            cs.class_action = action_index;
+            cs.classes = list_live_classes(cs.include_non_actors);
+            cs.class_filter.clear();
+            cs.open_classes = true;
+        }
+
+        // Lists the classes that currently have live objects. A trainer targets a class (all its instances), never a
+        // single object, because object instances are recreated on every level load.
+        auto render_class_picker(CreatorState& cs) -> void
+        {
+            if (cs.open_classes)
+            {
+                ImGui::OpenPopup("Class picker");
+                cs.open_classes = false;
+            }
+            ImGui::SetNextWindowSize(ImVec2(640, 520), ImGuiCond_Appearing);
+            if (!ImGui::BeginPopupModal("Class picker", nullptr, ImGuiWindowFlags_NoSavedSettings)) return;
+
+            ActionDef& action = cs.draft.cheats[static_cast<size_t>(cs.selected_cheat)].actions[cs.class_action];
+
+            ImGui::TextWrapped("Pick the class to target. Every live instance of it is affected, so the cheat keeps working after level loads.");
+            ImGui::SetNextItemWidth(240);
+            ImGui::InputTextWithHint("##classfilter", "filter...", &cs.class_filter);
+            ImGui::SameLine();
+            if (ImGui::Checkbox("include non-actors (widgets, components, managers)", &cs.include_non_actors)) cs.classes = list_live_classes(cs.include_non_actors);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Refresh")) cs.classes = list_live_classes(cs.include_non_actors);
+
+            std::string needle = cs.class_filter;
+            std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+            if (cs.classes.empty()) ImGui::TextDisabled("No classes found - is a level loaded?");
+            if (ImGui::BeginChild("##classrows", ImVec2(0, -34), ImGuiChildFlags_Borders))
+            {
+                if (ImGui::BeginTable("##classes", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY))
+                {
+                    ImGui::TableSetupColumn("Class");
+                    ImGui::TableSetupColumn("Live", ImGuiTableColumnFlags_WidthFixed, 50);
+                    ImGui::TableSetupColumn("##use", ImGuiTableColumnFlags_WidthFixed, 50);
+                    ImGui::TableSetupScrollFreeze(0, 1);
+                    ImGui::TableHeadersRow();
+                    for (size_t i = 0; i < cs.classes.size(); ++i)
+                    {
+                        const ClassRow& row = cs.classes[i];
+                        if (!needle.empty())
+                        {
+                            std::string lower = row.name;
+                            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                            if (lower.find(needle) == std::string::npos) continue;
+                        }
+                        ImGui::PushID(static_cast<int>(i));
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(row.name.c_str());
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", row.path.c_str());
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%d", row.instances);
+                        ImGui::TableNextColumn();
+                        if (ImGui::SmallButton("Use"))
+                        {
+                            action.target = "class:" + row.name;
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::PopID();
+                    }
+                    ImGui::EndTable();
+                }
+            }
+            ImGui::EndChild();
+            if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
         }
 
         auto render_browser(CreatorState& cs) -> void
@@ -317,6 +410,34 @@ namespace RC::Toolkit::UI
                             if (ImGui::Selectable(root.c_str())) action.target = root;
                         }
                         ImGui::EndCombo();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Pick class...")) open_class_picker(cs, index);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Choose from the classes that currently have live objects");
+
+                    // A class can have many live objects: apply to all of them, or to just one.
+                    static const char* const select_labels[] = {"all instances of the class", "just the first one", "the one nearest to the player", "the Nth one (index)"};
+                    static const char* const select_values[] = {"all", "first", "nearest", "index"};
+                    int current = 0;
+                    for (int i = 0; i < 4; ++i)
+                    {
+                        if (action.select == select_values[i]) current = i;
+                    }
+                    ImGui::SetNextItemWidth(260);
+                    if (ImGui::BeginCombo("applies to", select_labels[current]))
+                    {
+                        for (int i = 0; i < 4; ++i)
+                        {
+                            if (ImGui::Selectable(select_labels[i], i == current)) action.select = select_values[i];
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (action.select == "index")
+                    {
+                        ImGui::SameLine();
+                        int index = action.index;
+                        ImGui::SetNextItemWidth(90);
+                        if (ImGui::InputInt("##select_index", &index)) action.index = std::max(0, index);
                     }
                 }
 
@@ -511,7 +632,11 @@ namespace RC::Toolkit::UI
                 ImGui::TextUnformatted(cs.message.c_str());
             }
 
-            if (cs.selected_cheat >= 0 && cs.selected_cheat < static_cast<int>(cs.draft.cheats.size())) render_browser(cs);
+            if (cs.selected_cheat >= 0 && cs.selected_cheat < static_cast<int>(cs.draft.cheats.size()))
+            {
+                render_browser(cs);
+                render_class_picker(cs);
+            }
         }
     } // namespace
 

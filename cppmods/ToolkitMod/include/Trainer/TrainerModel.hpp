@@ -16,6 +16,9 @@
 // `value`, `off_value` and every entry of `params` may contain the placeholder {value}, which is replaced by the
 // slider's current value (or "1"/"0" for toggles).
 //
+// `select` / `index` narrow the matches of a class target to "just one" (first, nearest to the player, or the Nth).
+// A cheat whose targets do not exist in the current level cannot be switched on.
+//
 // Target syntax: <root>[.<Property>...]   roots: player_pawn, player_controller, game_mode, game_state, world,
 // world_settings, hud, class:<ClassName>, object:<full object path>.
 //   e.g. "player_pawn.CharacterMovement"  "class:BP_Door_C"  "object:/Game/Maps/Main.Main:PersistentLevel.Light_1"
@@ -30,6 +33,10 @@ namespace RC::Toolkit
     {
         std::string kind{"set_property"};
         std::string target{"player_pawn"};
+        // Which of the objects matching `target` the action applies to: "all" (every instance of the class),
+        // "first", "nearest" (closest to the player) or "index" (the `index`-th, 0-based).
+        std::string select{"all"};
+        int index{0};
         std::string property{};
         std::string value{};
         std::string off_value{};

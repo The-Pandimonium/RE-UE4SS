@@ -1,5 +1,7 @@
 #include <Trainer/TargetResolver.hpp>
 
+#include <algorithm>
+
 #include <EngineCompat/Adapter.hpp>
 #include <EngineCompat/Reflect.hpp>
 #include <Helpers/String.hpp>
@@ -45,7 +47,37 @@ namespace RC::Toolkit
         return roots;
     }
 
-    auto resolve_targets(const std::string& expression) -> std::vector<UObject*>
+    auto select_targets(std::vector<UObject*> objects, const std::string& select, int index) -> std::vector<UObject*>
+    {
+        objects.erase(std::remove(objects.begin(), objects.end(), nullptr), objects.end());
+        if (objects.empty() || select.empty() || select == "all") return objects;
+        if (select == "first") return {objects.front()};
+        if (select == "index")
+        {
+            if (index < 0 || static_cast<size_t>(index) >= objects.size()) return {};
+            return {objects[static_cast<size_t>(index)]};
+        }
+        if (select == "nearest")
+        {
+            auto& adapter = Compat::AdapterRegistry::Get();
+            auto player = adapter.actor_location(adapter.player_pawn());
+            if (!player) return {objects.front()};
+            UObject* best = nullptr;
+            double best_distance = 0.0;
+            for (UObject* obj : objects)
+            {
+                auto location = adapter.actor_location(obj);
+                if (!location) continue;
+                const double dx = location->x - player->x, dy = location->y - player->y, dz = location->z - player->z;
+                const double distance = dx * dx + dy * dy + dz * dz;
+                if (!best || distance < best_distance) { best = obj; best_distance = distance; }
+            }
+            return {best ? best : objects.front()};
+        }
+        return objects;
+    }
+
+    auto resolve_targets(const std::string& expression, const std::string& select, int index) -> std::vector<UObject*>
     {
         std::vector<UObject*> current;
         if (expression.empty()) return current;
@@ -62,7 +94,12 @@ namespace RC::Toolkit
         else if (root == "world") current.push_back(adapter.world());
         else if (root == "world_settings") current.push_back(adapter.world_settings());
         else if (root == "hud") current.push_back(adapter.hud(adapter.player_controller()));
-        else if (root.starts_with("class:")) current = adapter.actors_of_class(ensure_str(root.substr(6)));
+        else if (root.starts_with("class:"))
+        {
+            current = adapter.actors_of_class(ensure_str(root.substr(6)));
+            if (current.empty()) // not an actor class (widget, component, manager...): search the object array instead
+                UObjectGlobals::FindAllOf(ensure_str(root.substr(6)), current);
+        }
         else if (root.starts_with("object:")) current.push_back(UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr, ensure_str(root.substr(7))));
         else if (!root.empty())
         {
@@ -84,7 +121,7 @@ namespace RC::Toolkit
         }
 
         current.erase(std::remove(current.begin(), current.end(), nullptr), current.end());
-        return current;
+        return select_targets(std::move(current), select, index);
     }
 
     auto resolve_target(const std::string& expression) -> UObject*
