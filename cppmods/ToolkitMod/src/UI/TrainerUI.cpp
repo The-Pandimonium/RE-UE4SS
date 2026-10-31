@@ -637,16 +637,6 @@ namespace RC::Toolkit::UI
                 }
             }
 
-            ImGui::Separator();
-            if (ImGui::Button("Save trainer"))
-            {
-                cs.message = engine.save(cs.draft, cs.file_stem) ? "Saved " + cs.file_stem + ".json" : "Could not write the trainer file";
-            }
-            if (!cs.message.empty())
-            {
-                ImGui::SameLine();
-                ImGui::TextUnformatted(cs.message.c_str());
-            }
 
             if (cs.selected_cheat >= 0 && cs.selected_cheat < static_cast<int>(cs.draft.cheats.size()))
             {
@@ -656,11 +646,37 @@ namespace RC::Toolkit::UI
         }
     } // namespace
 
+    namespace
+    {
+        // Always-visible footer of the Trainer tab: saves the trainer being edited in the creator.
+        auto render_save_bar() -> void
+        {
+            auto& cs = creator();
+            ImGui::Separator();
+            const bool has_draft = !cs.draft.name.empty() || !cs.draft.cheats.empty();
+            ImGui::BeginDisabled(!has_draft);
+            if (ImGui::Button("Save trainer"))
+            {
+                cs.message = TrainerEngine::get().save(cs.draft, cs.file_stem) ? "Saved " + cs.file_stem + ".json" : "Could not write the trainer file";
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (!cs.message.empty()) ImGui::TextUnformatted(cs.message.c_str());
+            else if (has_draft) ImGui::TextDisabled("Editing '%s' (%zu cheats) -> %s.json", cs.draft.name.c_str(), cs.draft.cheats.size(), cs.file_stem.c_str());
+            else ImGui::TextDisabled("Open the Trainer creator to build a trainer, then save it here.");
+        }
+    } // namespace
+
     auto render_trainer_tab() -> void
     {
-        const ScrollRegion scroll("##toolkit_scroll_trainer");
-        render_cheats();
-        ImGui::Spacing();
-        if (ImGui::CollapsingHeader("Trainer creator")) render_creator();
+        // The save bar is pinned below the scrolling area, so it is reachable however long the content gets.
+        const float footer_height = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f + 2.0f;
+        {
+            const ScrollRegion scroll("##toolkit_scroll_trainer", ImVec2(0.0f, -footer_height));
+            render_cheats();
+            ImGui::Spacing();
+            if (ImGui::CollapsingHeader("Trainer creator")) render_creator();
+        }
+        render_save_bar();
     }
 } // namespace RC::Toolkit::UI

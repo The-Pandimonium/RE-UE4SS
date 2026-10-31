@@ -15,7 +15,7 @@ namespace RC::Toolkit::UI
     // smaller than the content. Declare one at the top of a tab body; it also closes correctly on early returns.
     struct ScrollRegion
     {
-        explicit ScrollRegion(const char* id) { ImGui::BeginChild(id, ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar); }
+        explicit ScrollRegion(const char* id, ImVec2 size = ImVec2(0.0f, 0.0f)) { ImGui::BeginChild(id, size, ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar); }
         ~ScrollRegion() { ImGui::EndChild(); }
         ScrollRegion(const ScrollRegion&) = delete;
         ScrollRegion& operator=(const ScrollRegion&) = delete;
