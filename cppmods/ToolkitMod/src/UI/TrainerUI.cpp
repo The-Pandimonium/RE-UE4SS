@@ -84,11 +84,6 @@ namespace RC::Toolkit::UI
             auto& engine = TrainerEngine::get();
             const auto trainers = engine.trainers();
 
-            if (ImGui::Button("Reload trainer files")) engine.reload();
-            ImGui::SameLine();
-            if (ImGui::Button("Disable all cheats")) engine.disable_all();
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s", engine.directory().string().c_str());
 
             if (trainers.empty())
             {
@@ -648,35 +643,38 @@ namespace RC::Toolkit::UI
 
     namespace
     {
-        // Always-visible footer of the Trainer tab: saves the trainer being edited in the creator.
-        auto render_save_bar() -> void
+        // Fixed toolbar at the top of the Trainer tab.
+        auto render_toolbar() -> void
         {
+            auto& engine = TrainerEngine::get();
             auto& cs = creator();
-            ImGui::Separator();
+            if (ImGui::Button("Reload trainer files")) engine.reload();
+            ImGui::SameLine();
+            if (ImGui::Button("Disable all cheats")) engine.disable_all();
+            ImGui::SameLine();
             const bool has_draft = !cs.draft.name.empty() || !cs.draft.cheats.empty();
             ImGui::BeginDisabled(!has_draft);
-            if (ImGui::Button("Save trainer"))
-            {
-                cs.message = TrainerEngine::get().save(cs.draft, cs.file_stem) ? "Saved " + cs.file_stem + ".json" : "Could not write the trainer file";
-            }
+            if (ImGui::Button("Save trainer")) cs.message = engine.save(cs.draft, cs.file_stem) ? "Saved " + cs.file_stem + ".json" : "Could not write the trainer file";
             ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip(has_draft ? "Writes the trainer being edited in the creator to %s" : "Nothing to save yet - open the Trainer creator and add a cheat.",
+                                  (engine.directory() / (cs.file_stem + ".json")).string().c_str());
             ImGui::SameLine();
             if (!cs.message.empty()) ImGui::TextUnformatted(cs.message.c_str());
             else if (has_draft) ImGui::TextDisabled("Editing '%s' (%zu cheats) -> %s.json", cs.draft.name.c_str(), cs.draft.cheats.size(), cs.file_stem.c_str());
-            else ImGui::TextDisabled("Open the Trainer creator to build a trainer, then save it here.");
+            else ImGui::TextDisabled("%s", engine.directory().string().c_str());
         }
     } // namespace
 
     auto render_trainer_tab() -> void
     {
-        // The save bar is pinned below the scrolling area, so it is reachable however long the content gets.
-        const float footer_height = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f + 2.0f;
-        {
-            const ScrollRegion scroll("##toolkit_scroll_trainer", ImVec2(0.0f, -footer_height));
-            render_cheats();
-            ImGui::Spacing();
-            if (ImGui::CollapsingHeader("Trainer creator")) render_creator();
-        }
-        render_save_bar();
+        // The toolbar (save, reload, disable all) is fixed at the TOP of the tab, outside the scrolling area, so it is
+        // reachable even when the window is taller than the screen or the content is long.
+        render_toolbar();
+        ImGui::Separator();
+        const ScrollRegion scroll("##toolkit_scroll_trainer");
+        render_cheats();
+        ImGui::Spacing();
+        if (ImGui::CollapsingHeader("Trainer creator")) render_creator();
     }
 } // namespace RC::Toolkit::UI
