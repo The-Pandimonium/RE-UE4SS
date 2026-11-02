@@ -119,8 +119,8 @@ namespace RC::Toolkit::UI
                             {
                                 ImGui::SameLine();
                                 double value = state.value;
-                                double low = cheat.min;
-                                double high = std::max(cheat.max, cheat.min + 1e-6);
+                                double low = state.min;
+                                double high = std::max(state.max, state.min + 1e-6);
                                 // Logarithmic sliders need a positive range; they give fine control near `min` and still reach `max`.
                                 const ImGuiSliderFlags flags = cheat.log && low > 0.0 ? ImGuiSliderFlags_Logarithmic : ImGuiSliderFlags_None;
                                 ImGui::SetNextItemWidth(220);
@@ -134,6 +134,18 @@ namespace RC::Toolkit::UI
                                     engine.set_value(ti, ci, value);
                                     // Moving the slider is an intent to use it: switch the cheat on.
                                     if (!state.enabled) engine.set_enabled(ti, ci, true);
+                                }
+                                if (state.has_current)
+                                {
+                                    ImGui::SameLine();
+                                    ImGui::TextDisabled("now %.4g", state.current);
+                                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The cheat's property right now (updated by Refresh values).");
+                                }
+                                if (!state.bounds_note.empty())
+                                {
+                                    ImGui::SameLine();
+                                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "(!)");
+                                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", state.bounds_note.c_str());
                                 }
                             }
                         }
@@ -470,7 +482,7 @@ namespace RC::Toolkit::UI
                     ImGui::SetNextItemWidth(260);
                     ImGui::InputText("value", &action.value);
                     ImGui::SameLine();
-                    ImGui::TextDisabled("{value} = slider");
+                    ImGui::TextDisabled("{value} slider   {current}   {class:X.Prop}");
                     ImGui::SetNextItemWidth(260);
                     ImGui::InputText("off value", &action.off_value);
                     ImGui::SameLine();
@@ -599,14 +611,23 @@ namespace RC::Toolkit::UI
                 combo_string("type", cheat.type, kCheatTypes);
                 if (cheat.type == "slider")
                 {
-                    ImGui::SetNextItemWidth(100);
-                    ImGui::InputDouble("min", &cheat.min);
+                    // Bounds are numbers or expressions: "400", "{class:daynightCycle_C.MaxTime}", "{current} * 2".
+                    auto bound_field = [](const char* label, double& number, std::string& expression) {
+                        std::string text = expression.empty() ? std::format("{}", number) : expression;
+                        ImGui::SetNextItemWidth(160);
+                        if (ImGui::InputText(label, &text))
+                        {
+                            const auto parsed = evaluate_expression(text);
+                            if (parsed && text.find('{') == std::string::npos) { number = *parsed; expression.clear(); }
+                            else expression = text;
+                        }
+                    };
+                    bound_field("min", cheat.min, cheat.min_expr);
                     ImGui::SameLine();
-                    ImGui::SetNextItemWidth(100);
-                    ImGui::InputDouble("max", &cheat.max);
+                    bound_field("max", cheat.max, cheat.max_expr);
                     ImGui::SameLine();
-                    ImGui::SetNextItemWidth(100);
-                    ImGui::InputDouble("default", &cheat.default_value);
+                    bound_field("default", cheat.default_value, cheat.default_expr);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Numbers or expressions. Placeholders:\n  {current}  the current value of this cheat's first property\n  {class:Name.Property}  a property of the first instance of a class\n  {player_pawn.Component.Property}\nArithmetic works: {class:daynightCycle_C.MaxTime} * 2");
                     ImGui::SameLine();
                     ImGui::Checkbox("log", &cheat.log);
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Logarithmic slider: use for wide ranges such as 1 to 10000 (needs min > 0).\nThe value box next to the slider accepts any number regardless of the range.");
@@ -649,6 +670,9 @@ namespace RC::Toolkit::UI
             auto& engine = TrainerEngine::get();
             auto& cs = creator();
             if (ImGui::Button("Reload trainer files")) engine.reload();
+            ImGui::SameLine();
+            if (ImGui::Button("Refresh values")) engine.refresh_values();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Re-reads the game: slider ranges and defaults that use {current} or {class:X.Property},\nand the live \"now\" values shown next to sliders.");
             ImGui::SameLine();
             if (ImGui::Button("Disable all cheats")) engine.disable_all();
             ImGui::SameLine();

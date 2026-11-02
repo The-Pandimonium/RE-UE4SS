@@ -293,6 +293,94 @@ steps.push_back({"target selection + availability", 30, [](int) {               
                                  return pass(std::format("BaseEyeHeight {} -> x2 default -> x3 -> x400 -> x0.5, held, restored", base));
                              }});
 
+            // Placeholders, expressions, refresh, and live slider updates while the cheat is already on.
+            steps.push_back({"trainer placeholders, refresh and live sliders", 2000, [](int tick) {
+                                 static size_t ti = 0;
+                                 static UObject* p = nullptr;
+                                 static double base = 0;
+                                 auto& engine = TrainerEngine::get();
+                                 auto height = [&] { return Reflect::GetPropertyNumber(p, L"BaseEyeHeight").value_or(-1.0); };
+                                 if (tick == 0)
+                                 {
+                                     // The arithmetic evaluator on its own.
+                                     auto eq = [](const char* text, double expected) {
+                                         auto v = evaluate_expression(text);
+                                         return v && std::abs(*v - expected) < 1e-9;
+                                     };
+                                     if (!eq("2*(3+4)-1", 13) || !eq("-(1+2)*3", -9) || !eq("10/4", 2.5) || !eq(" 1 + 2 ", 3) || evaluate_expression("1/0") || evaluate_expression("abc") || evaluate_expression("2*"))
+                                         return fail("arithmetic evaluator gave a wrong answer");
+                                     p = pawn();
+                                     auto h = Reflect::GetPropertyNumber(p, L"BaseEyeHeight");
+                                     if (!h) return pass("SKIPPED: pawn has no BaseEyeHeight");
+                                     base = *h;
+
+                                     ActionDef set;
+                                     set.kind = "set_property"; set.target = "player_pawn"; set.property = "BaseEyeHeight"; set.value = "{value}";
+                                     CheatDef bounds = make_cheat("ph_bounds", "slider", {set});
+                                     bounds.min_expr = "{class:Pawn.BaseEyeHeight} / 2";
+                                     bounds.max_expr = "{\"class:Pawn\".BaseEyeHeight} * 4";
+                                     bounds.default_expr = "{current}";
+                                     ActionDef call;
+                                     call.kind = "call_function"; call.target = "player_pawn"; call.function = "SetActorHiddenInGame";
+                                     call.params["bNewHidden"] = "{value}";
+                                     call.off_function = "SetActorHiddenInGame";
+                                     call.off_params["bNewHidden"] = "false";
+                                     CheatDef hide = make_cheat("ph_hide", "slider", {call});
+                                     hide.min = 0; hide.max = 1; hide.default_value = 1;
+                                     ActionDef add;
+                                     add.kind = "set_property"; add.target = "player_pawn"; add.property = "BaseEyeHeight"; add.value = "{current} + 10";
+                                     CheatDef plus = make_cheat("ph_plus", "button", {add});
+                                     TrainerDef t;
+                                     t.name = "PlaceholderTest";
+                                     t.cheats = {bounds, hide, plus};
+                                     ti = engine.add_trainer_for_test(t);
+                                     return pending();
+                                 }
+                                 if (tick < 60) return pending();
+                                 if (tick == 60)
+                                 {
+                                     engine.refresh_values();
+                                     auto s = engine.state(ti, 0);
+                                     if (!s.bounds_note.empty()) return fail("bounds note: " + s.bounds_note);
+                                     if (std::abs(s.min - base / 2) > 1e-6 || std::abs(s.max - base * 4) > 1e-6 || std::abs(s.default_value - base) > 1e-6)
+                                         return fail(std::format("bounds min={} max={} default={}, expected {} {} {}", s.min, s.max, s.default_value, base / 2, base * 4, base));
+                                     if (!s.has_current || std::abs(s.current - base) > 1e-6) return fail("live 'current' value not reported");
+                                     // The game changes the value; Refresh must show the new one.
+                                     Reflect::SetPropertyNumber(p, L"BaseEyeHeight", base + 20.0);
+                                     engine.refresh_values();
+                                     s = engine.state(ti, 0);
+                                     if (std::abs(s.default_value - (base + 20.0)) > 1e-6 || std::abs(s.max - (base + 20.0) * 4) > 1e-6 || std::abs(s.current - (base + 20.0)) > 1e-6)
+                                         return fail(std::format("refresh did not pick up the new value (default {} max {} current {})", s.default_value, s.max, s.current));
+                                     // An untouched slider enables at its live default ({current}), not at the number from the file.
+                                     engine.set_enabled(ti, 0, true);
+                                     if (std::abs(height() - (base + 20.0)) > 1e-6) return fail(std::format("enabling with default {{current}} wrote {}", height()));
+                                     // Already on: moving the slider must update the property right away.
+                                     engine.set_value(ti, 0, 120.0);
+                                     if (std::abs(height() - 120.0) > 1e-6) return fail(std::format("slider moved while on: property is {}, expected 120", height()));
+                                     engine.set_value(ti, 0, 400.0);
+                                     if (std::abs(height() - 400.0) > 1e-6) return fail(std::format("slider to 400 while on: property is {}", height()));
+                                     engine.set_enabled(ti, 0, false);
+                                     if (std::abs(height() - (base + 20.0)) > 1e-6) return fail(std::format("not restored on disable: {}", height()));
+
+                                     // {value} inside call_function parameters, also while on.
+                                     engine.set_value(ti, 1, 1.0);
+                                     engine.set_enabled(ti, 1, true);
+                                     if (Reflect::GetPropertyNumber(p, L"bHidden").value_or(-1) != 1.0) return fail("call_function {value}=1 did not hide the pawn");
+                                     engine.set_value(ti, 1, 0.0);
+                                     if (Reflect::GetPropertyNumber(p, L"bHidden").value_or(-1) != 0.0) return fail("slider moved to 0 while on did not update the call_function parameter");
+                                     engine.set_enabled(ti, 1, false);
+
+                                     // Arithmetic on {current} in a value.
+                                     Reflect::SetPropertyNumber(p, L"BaseEyeHeight", 50.0);
+                                     engine.press(ti, 2);
+                                     const double plus_result = height();
+                                     Reflect::SetPropertyNumber(p, L"BaseEyeHeight", base);
+                                     if (std::abs(plus_result - 60.0) > 1e-6) return fail(std::format("'{{current}} + 10' gave {}", plus_result));
+                                     return pass("bounds from {class:..}/quoted/{current}, refresh, live set_property and call_function updates, arithmetic");
+                                 }
+                                 return pending();
+                             }});
+
             steps.push_back({"microbench (informational)", 600, [](int) {
                                  using clock = std::chrono::steady_clock;
                                  auto& adapter = AdapterRegistry::Get();

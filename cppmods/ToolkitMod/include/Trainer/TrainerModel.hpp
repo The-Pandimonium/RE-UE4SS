@@ -13,8 +13,15 @@
 //   console          Run `value` as a console command (`off_value` when a toggle is switched off).
 //   time_scale       Global time dilation: `value` (or the slider value) while on, 1.0 when off.
 //
-// `value`, `off_value` and every entry of `params` may contain the placeholder {value}, which is replaced by the
-// slider's current value (or "1"/"0" for toggles).
+// Placeholders (in `value`, `off_value`, every entry of `params`, and in a slider's `min_expr`/`max_expr`/`default_expr`):
+//   {value}                       the slider's current value ("1"/"0" for toggles)
+//   {current}                     the current value of the action's own property (for a slider bound: of its first action)
+//   {<target>.<Property>}         any property of the FIRST instance of a target, e.g. {class:daynightCycle_C.MaxTime} or
+//                                 {player_pawn.CharacterMovement.MaxWalkSpeed}; quotes around the target are allowed
+// Numeric fields also accept arithmetic on placeholders: "{class:daynightCycle_C.MaxTime} * 2", "({current} + 10) / 2".
+// Unresolvable placeholders are left as written (and the numeric fallback `min`/`max`/`default_value` is used for bounds).
+//
+// While a slider cheat is on, moving the slider re-applies every action that uses {value} immediately.
 //
 // `select` / `index` narrow the matches of a class target to "just one" (first, nearest to the player, or the Nth).
 // A cheat whose targets do not exist in the current level cannot be switched on.
@@ -60,6 +67,10 @@ namespace RC::Toolkit
         double max{100.0};
         double default_value{1.0};
         bool log{false}; // logarithmic slider: fine control near min, still reaches max (for ranges like 1 to 10000)
+        // Slider bounds/default as expressions (see placeholders above). When non-empty they replace min/max/default_value.
+        std::string min_expr{};
+        std::string max_expr{};
+        std::string default_expr{};
         std::vector<ActionDef> actions{};
     };
 

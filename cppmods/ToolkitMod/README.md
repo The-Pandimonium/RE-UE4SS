@@ -39,6 +39,21 @@ lists the classes that currently have live objects. Sliders have `min`/`max` (de
 cannot be switched on or pressed. `assets/trainers/EngineEssentials.json` is a working example built only on stock
 engine classes.
 
+### Placeholders and live sliders
+
+Values (`value`, `off_value`, `params`) and slider bounds can use placeholders and simple arithmetic:
+
+| Placeholder | Meaning |
+| --- | --- |
+| `{value}` | the slider's current value (`1`/`0` for toggles) |
+| `{current}` | the current value of the action's own property (for a slider bound: of the cheat's first action) |
+| `{class:daynightCycle_C.MaxTime}` | any property of the **first** instance of a target (`"class:..."` in quotes also works) |
+
+Slider bounds are `min`/`max`/`default_value` or, to compute them from the game, `min_expr`/`max_expr`/`default_expr`, e.g.
+`"max_expr": "{class:daynightCycle_C.MaxTime}", "default_expr": "{current}"`. Arithmetic (`+ - * / ( )`) works anywhere a
+placeholder does. The Trainer tab's **Refresh values** button re-reads everything so sliders show up-to-date bounds,
+defaults and a "now" readout. Moving a slider while its cheat is already on updates the game immediately.
+
 ## In-game waypoint markers
 
 Visible waypoints are shown as **marker actors**: a beam and a ball built from `/Engine/BasicShapes`, no collision, created

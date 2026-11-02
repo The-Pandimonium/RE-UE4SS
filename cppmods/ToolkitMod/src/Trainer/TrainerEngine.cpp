@@ -49,6 +49,14 @@ namespace RC::Toolkit
             return std::format("{}", v);
         }
 
+        auto eval_into(const std::string& text, double& out) -> bool
+        {
+            auto value = evaluate_expression(text);
+            if (!value) return false;
+            out = *value;
+            return true;
+        }
+
         auto substitute(std::string text, double value) -> std::string
         {
             const std::string token = "{value}";
@@ -73,7 +81,7 @@ namespace RC::Toolkit
             if (Reflect::IsNumeric(p))
             {
                 double d = 0.0;
-                if (parse_number(text, d) || parse_bool_text(text, d)) return Reflect::SetNumber(p, ptr, d) || (error = "could not write number", false);
+                if (parse_number(text, d) || parse_bool_text(text, d) || eval_into(text, d)) return Reflect::SetNumber(p, ptr, d) || (error = "could not write number", false);
             }
             if (Reflect::ImportText(p, ptr, ensure_str(text), object)) return true;
             error = "engine rejected value '" + text + "' for " + property;
@@ -162,6 +170,7 @@ namespace RC::Toolkit
         std::lock_guard lock(m_mutex);
         m_trainers = std::move(loaded);
         m_avail_dirty = true;
+        m_views_dirty = true;
         m_availability.clear();
         m_stems = std::move(stems);
         Output::send<LogLevel::Normal>(STR("[ToolkitMod] Loaded {} trainer file(s) from {}\n"), m_trainers.size(), m_directory.wstring());
@@ -202,15 +211,29 @@ namespace RC::Toolkit
         if (ti >= m_trainers.size() || ci >= m_trainers[ti].cheats.size()) return {};
         const auto& trainer = m_trainers[ti];
         const auto& cheat = trainer.cheats[ci];
-        auto it = m_runtime.find(key_of(trainer, cheat));
+        const std::string key = key_of(trainer, cheat);
+        // Slider bounds/default as resolved at the last refresh (placeholders evaluated); numeric fields until then.
         CheatState out{false, cheat.default_value, {}};
-        if (auto it = m_runtime.find(key_of(trainer, cheat)); it != m_runtime.end())
+        out.min = cheat.min;
+        out.max = cheat.max;
+        out.default_value = cheat.default_value;
+        if (auto view = m_views.find(key); view != m_views.end())
         {
-            out.enabled = it->second.enabled;
-            out.value = (it->second.value_set || it->second.enabled) ? it->second.value : cheat.default_value;
-            out.status = it->second.status;
+            out.min = view->second.min;
+            out.max = view->second.max;
+            out.default_value = view->second.default_value;
+            out.has_current = view->second.has_current;
+            out.current = view->second.current;
+            out.bounds_note = view->second.note;
+            out.value = view->second.default_value;
         }
-        if (auto av = m_availability.find(key_of(trainer, cheat)); av != m_availability.end())
+        if (auto rt = m_runtime.find(key); rt != m_runtime.end())
+        {
+            out.enabled = rt->second.enabled;
+            if (rt->second.value_set || rt->second.enabled) out.value = rt->second.value;
+            out.status = rt->second.status;
+        }
+        if (auto av = m_availability.find(key); av != m_availability.end())
         {
             out.available = av->second.available;
             out.unavailable_reason = av->second.reason;
@@ -243,7 +266,8 @@ namespace RC::Toolkit
             }
             if (enabled)
             {
-                if (cheat.type == "slider" && !rt.value_set) rt.value = cheat.default_value;
+                // An untouched slider starts from its default, evaluated now (so a {current} default is the live value).
+                if (cheat.type == "slider" && !rt.value_set) rt.value = compute_view(cheat).default_value;
                 rt.def = cheat;
                 rt.enabled = apply_enable(cheat, rt, rt.status);
                 if (!rt.enabled) apply_disable(cheat, rt, rt.status);
@@ -385,7 +409,7 @@ namespace RC::Toolkit
         const std::string& kind = action.kind;
         if (kind == "console")
         {
-            const std::string cmd = substitute(revert ? action.off_value : action.value, value);
+            const std::string cmd = expand_text(revert ? action.off_value : action.value, value, &action);
             if (cmd.empty()) return true;
             if (Compat::AdapterRegistry::Get().exec_console(ensure_str(cmd))) return true;
             status = "console command failed: " + cmd;
@@ -394,7 +418,11 @@ namespace RC::Toolkit
         if (kind == "time_scale")
         {
             double v = 1.0;
-            if (!revert && !parse_number(substitute(action.value.empty() ? "{value}" : action.value, value), v)) v = value;
+            if (!revert)
+            {
+                bool resolved = false;
+                v = eval_number(action.value.empty() ? std::string("{value}") : action.value, value, &action, value, &resolved, nullptr);
+            }
             if (Compat::AdapterRegistry::Get().set_time_dilation(v)) return true;
             status = "could not set time dilation";
             return false;
@@ -409,7 +437,7 @@ namespace RC::Toolkit
 
         if (kind == "set_property" || kind == "freeze_property")
         {
-            const std::string text = substitute(revert ? action.off_value : action.value, value);
+            const std::string text = expand_text(revert ? action.off_value : action.value, value, &action);
             if (revert && text.empty()) return true;
             bool ok = true;
             for (UObject* obj : objects) ok = write_value(obj, action.property, text, status) && ok;
@@ -443,7 +471,7 @@ namespace RC::Toolkit
                 {
                     const std::wstring wname = ensure_str(pname);
                     if (!call.has_param(wname.c_str())) { status = "function '" + fn_name + "' has no parameter '" + pname + "'"; ok = false; continue; }
-                    call.SetText(wname.c_str(), ensure_str(substitute(pvalue, value)));
+                    call.SetText(wname.c_str(), ensure_str(expand_text(pvalue, value, &action)));
                 }
                 if (!call.Invoke()) { status = "calling '" + fn_name + "' failed"; ok = false; }
             }
@@ -486,7 +514,12 @@ namespace RC::Toolkit
                         if (!art.base_numbers.contains(obj)) { error = "property '" + action.property + "' is not numeric"; ok = false; }
                         else ok = write_value(obj, action.property, number_to_string(art.base_numbers[obj] * action.scale * (cheat.type == "slider" ? rt.value : 1.0)), error);
                     }
-                    else ok = write_value(obj, action.property, substitute(action.value, rt.value), error);
+                    else
+                    {
+                        // {current} in a held value means the value the property had when the cheat was switched on.
+                        const std::optional<std::string> held = art.base_texts.contains(obj) ? std::optional<std::string>(to_string(art.base_texts[obj])) : std::optional<std::string>{};
+                        ok = write_value(obj, action.property, expand_text(action.value, rt.value, &action, held), error);
+                    }
                     if (!ok) { last_error = error; all_ok = false; }
                 }
             }
@@ -539,7 +572,7 @@ namespace RC::Toolkit
                     if (!Reflect::IsValidObject(obj)) continue;
                     FProperty* p = Reflect::FindProperty(obj, ensure_str(action.property));
                     if (!p) continue;
-                    if (!action.off_value.empty() && kind != "scale_property") write_value(obj, action.property, substitute(action.off_value, 0.0), error);
+                    if (!action.off_value.empty() && kind != "scale_property") write_value(obj, action.property, expand_text(action.off_value, 0.0, &action), error);
                     else if (auto it = art.base_texts.find(obj); it != art.base_texts.end())
                     {
                         if (auto number = art.base_numbers.find(obj); number != art.base_numbers.end() && Reflect::IsNumeric(p))
@@ -566,32 +599,45 @@ namespace RC::Toolkit
         status = "off";
     }
 
+    // Slider moved while the cheat is on: push the new value into every action that depends on it, right away.
     auto TrainerEngine::apply_value_change(const CheatDef& cheat, CheatRuntime& rt) -> void
     {
-        // Slider moved while enabled: re-apply value-dependent actions immediately.
+        auto uses_value = [](const ActionDef& a) {
+            if (a.value.find("{value}") != std::string::npos) return true;
+            for (const auto& [name, text] : a.params)
+            {
+                if (text.find("{value}") != std::string::npos) return true;
+            }
+            return false;
+        };
         for (size_t i = 0; i < cheat.actions.size() && i < rt.actions.size(); ++i)
         {
             const ActionDef& action = cheat.actions[i];
+            ActionRuntime& art = rt.actions[i];
             std::string error;
             if (action.kind == "scale_property")
             {
-                for (UObject* obj : rt.actions[i].objects)
+                for (UObject* obj : art.objects)
                 {
-                    auto base = rt.actions[i].base_numbers.find(obj);
-                    if (base != rt.actions[i].base_numbers.end() && Reflect::IsValidObject(obj))
+                    auto base = art.base_numbers.find(obj);
+                    if (base != art.base_numbers.end() && Reflect::IsValidObject(obj))
                         write_value(obj, action.property, number_to_string(base->second * action.scale * rt.value), error);
                 }
             }
-            else if (action.kind == "freeze_property" && action.value.find("{value}") != std::string::npos)
+            else if ((action.kind == "freeze_property" || action.kind == "set_property") && uses_value(action))
             {
-                for (UObject* obj : rt.actions[i].objects)
+                // Freezes are also re-applied by the tick; writing now makes the change instant.
+                art.value_ready = false;
+                for (UObject* obj : art.objects)
                 {
-                    if (Reflect::IsValidObject(obj)) write_value(obj, action.property, substitute(action.value, rt.value), error);
+                    if (!Reflect::IsValidObject(obj)) continue;
+                    const std::optional<std::string> held = art.base_texts.contains(obj) ? std::optional<std::string>(to_string(art.base_texts[obj])) : std::optional<std::string>{};
+                    write_value(obj, action.property, expand_text(action.value, rt.value, &action, held), error);
                 }
             }
-            else if (action.kind == "time_scale" || action.kind == "console" || action.kind == "call_function")
+            else if (action.kind == "time_scale" || ((action.kind == "console" || action.kind == "call_function") && uses_value(action)))
             {
-                if (action.value.find("{value}") != std::string::npos || action.kind == "time_scale") run_one_shot(action, rt.value, false, error);
+                run_one_shot(action, rt.value, false, error);
             }
         }
     }
@@ -601,6 +647,7 @@ namespace RC::Toolkit
         std::lock_guard lock(m_mutex);
         m_clock += dt;
         if (m_clock >= m_next_availability) refresh_availability();
+        if (m_views_dirty && !m_trainers.empty() && m_clock > 1.0) refresh_values_locked();
 
         // Resolve block targets on a timer so the ProcessEvent hook never has to touch the engine itself.
         for (auto& block : m_blocks)
@@ -639,13 +686,21 @@ namespace RC::Toolkit
                         art.objects = std::move(fresh);
                         // Spread refreshes over time so many cheats do not all resolve on the same frame.
                         art.next_refresh = m_clock + kRefreshSeconds + 0.013 * static_cast<double>(i % 8);
+                        // References such as {class:X.Prop} can change while the cheat is on: re-read them with each refresh.
+                        if (action.value.find('{') != std::string::npos) art.value_ready = false;
                     }
 
                     // The wanted value only changes when the slider moves; parse it once, not every frame.
                     if (!art.value_ready || art.value_key != rt.value)
                     {
-                        art.wanted_text = substitute(action.value, rt.value);
-                        art.wanted_parsed = parse_number(art.wanted_text, art.wanted) || parse_bool_text(art.wanted_text, art.wanted);
+                        // {current} means the value the property had when the cheat was switched on.
+                        std::optional<std::string> held;
+                        if (!art.objects.empty())
+                        {
+                            if (auto it = art.base_texts.find(art.objects.front()); it != art.base_texts.end()) held = to_string(it->second);
+                        }
+                        art.wanted_text = expand_text(action.value, rt.value, &action, held);
+                        art.wanted_parsed = parse_number(art.wanted_text, art.wanted) || parse_bool_text(art.wanted_text, art.wanted) || eval_into(art.wanted_text, art.wanted);
                         art.value_key = rt.value;
                         art.value_ready = true;
                     }
@@ -799,6 +854,7 @@ namespace RC::Toolkit
             }
         }
         m_availability = std::move(fresh);
+        m_views_dirty = true; // targets appeared/disappeared: slider bounds that reference them may have changed
     }
 } // namespace RC::Toolkit
 

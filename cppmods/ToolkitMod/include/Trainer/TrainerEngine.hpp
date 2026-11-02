@@ -3,6 +3,7 @@
 #include <atomic>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -24,7 +25,17 @@ namespace RC::Toolkit
         // Such a cheat can be switched off but not on / pressed.
         bool available{true};
         std::string unavailable_reason{};
+        // Slider bounds as currently resolved (placeholders evaluated at the last refresh).
+        double min{0.0};
+        double max{100.0};
+        double default_value{1.0};
+        bool has_current{false}; // `current` is valid
+        double current{0.0};     // live value of the cheat's first property when last refreshed
+        std::string bounds_note{}; // why an expression could not be resolved, if so
     };
+
+    // Evaluates + - * / ( ) over plain numbers (also "true"/"false"). Nullopt when the text is not such an expression.
+    auto evaluate_expression(const std::string& text) -> std::optional<double>;
 
     class TrainerEngine
     {
@@ -39,6 +50,9 @@ namespace RC::Toolkit
 
         // ---- Trainer files (any thread) ----
         auto reload() -> void;
+        // Re-evaluates every slider's bounds/default and live value from the game (placeholders such as {current} and
+        // {class:X.Prop}). Called by the Refresh button; also runs once after a reload.
+        auto refresh_values() -> void;
         // Test hook: adds an in-memory trainer (not saved) and returns its index.
         auto add_trainer_for_test(TrainerDef trainer) -> size_t;
         [[nodiscard]] auto trainers() const -> std::vector<TrainerDef>; // copy
@@ -120,6 +134,23 @@ namespace RC::Toolkit
         auto refresh_objects(const ActionDef& action, ActionRuntime& art) -> void;
         auto remove_blocks(const std::string& cheat_key) -> void;
         auto refresh_availability() -> void;
+        struct SliderView
+        {
+            double min{0.0};
+            double max{100.0};
+            double default_value{1.0};
+            bool has_current{false};
+            double current{0.0};
+            std::string note{};
+        };
+        auto compute_view(const CheatDef& cheat) -> SliderView;
+        auto refresh_values_locked() -> void; // caller holds m_mutex, game thread
+        // Expands {value}, {current} and {<target>.<Property>} in `text`. `current_text` overrides {current} (used to
+        // hold the value a property had when a cheat was switched on).
+        auto expand_text(const std::string& text, double slider, const ActionDef* action, const std::optional<std::string>& current_text = std::nullopt) -> std::string;
+        auto eval_number(const std::string& expression, double slider, const ActionDef* action, double fallback, bool* resolved, std::string* note) -> double;
+        std::map<std::string, SliderView> m_views;
+        bool m_views_dirty{true};
 
         std::filesystem::path m_directory;
         mutable std::recursive_mutex m_mutex;

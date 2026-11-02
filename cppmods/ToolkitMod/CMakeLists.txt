@@ -10,6 +10,7 @@ add_library(${TARGET} SHARED
         src/SelfTest.cpp
         src/Trainer/TargetResolver.cpp
         src/Trainer/TrainerEngine.cpp
+        src/Trainer/TrainerExpressions.cpp
         src/Trainer/Inspect.cpp
         src/Teleport/Waypoints.cpp
         src/Teleport/WaypointRenderer.cpp
