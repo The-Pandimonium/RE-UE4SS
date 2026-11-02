@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <glaze/glaze.hpp>
 #include <mutex>
 
 #include <imgui.h>
@@ -14,6 +15,19 @@
 
 namespace RC::Toolkit::UI
 {
+    struct LevelNote
+    {
+        std::string level{};    // short name or package path
+        std::string severity{}; // "hang" for a level that freezes the game
+        std::string note{};
+    };
+    
+    struct LevelNotes
+    {
+        std::vector<LevelNote> levels{};
+        std::vector<LevelNote> unsafe_origins{};
+    };
+
     namespace
     {
         struct LevelRow
@@ -33,12 +47,50 @@ namespace RC::Toolkit::UI
             std::string options;
             bool game_only{true};
             std::vector<std::string> recent;
+            // Per-game notes about levels (Mods/ToolkitMod/level_notes.json): known hangs, unsafe places to travel from.
+            std::vector<LevelNote> notes;
+            std::vector<LevelNote> unsafe_origins;
+            bool notes_loaded{false};
+            std::string pending_path;
+            std::string pending_note;
+            bool open_confirm{false};
         };
 
         auto state() -> LevelState&
         {
             static LevelState s;
             return s;
+        }
+
+        auto load_notes(LevelState& ls) -> void
+        {
+            if (ls.notes_loaded) return;
+            ls.notes_loaded = true;
+            LevelNotes loaded;
+            const auto path = Session::get().root() / "level_notes.json";
+            if (!glz::read_file_json<glz::opts{.error_on_unknown_keys = false}>(loaded, path.string(), std::string{}))
+            {
+                ls.notes = std::move(loaded.levels);
+                ls.unsafe_origins = std::move(loaded.unsafe_origins);
+            }
+        }
+
+        auto note_for(const LevelState& ls, const LevelRow& row) -> const LevelNote*
+        {
+            for (const auto& n : ls.notes)
+            {
+                if (n.level == row.path || n.level == row.name) return &n;
+            }
+            return nullptr;
+        }
+
+        auto origin_warning(const LevelState& ls, const std::string& current_level) -> const LevelNote*
+        {
+            for (const auto& n : ls.unsafe_origins)
+            {
+                if (n.level == current_level) return &n;
+            }
+            return nullptr;
         }
 
         auto request_refresh() -> void
@@ -78,9 +130,11 @@ namespace RC::Toolkit::UI
         const SessionSnapshot snap = session.snapshot();
 
         if (!ls.loaded && !ls.loading) request_refresh();
+        load_notes(ls);
 
         if (snap.has_world) ImGui::Text("Current level: %s", snap.level.c_str());
         else ImGui::TextDisabled("No world loaded");
+if (const LevelNote* warn = origin_warning(ls, snap.level))            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f), "Warning: %s", warn->note.c_str());
         const std::string message = session.last_message();
         if (!message.empty()) ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1), "%s", message.c_str());
 
@@ -127,6 +181,28 @@ namespace RC::Toolkit::UI
             }
         }
 
+        if (ls.open_confirm)
+        {
+            ImGui::OpenPopup("Open anyway?");
+            ls.open_confirm = false;
+        }
+        ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_Appearing);
+        if (ImGui::BeginPopupModal("Open anyway?", nullptr, ImGuiWindowFlags_NoSavedSettings))
+        {
+            ImGui::TextWrapped("%s", ls.pending_note.c_str());
+            ImGui::Spacing();
+            ImGui::TextDisabled("%s", ls.pending_path.c_str());
+            ImGui::Spacing();
+            if (ImGui::Button("Open anyway"))
+            {
+                session.open_level(ls.pending_path, ls.options);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+
         if (!ImGui::BeginTable("##levels", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY, ImVec2(0.0f, std::max(300.0f, ImGui::GetContentRegionAvail().y)))) return;
         ImGui::TableSetupColumn("Level");
         ImGui::TableSetupColumn("Package");
@@ -145,15 +221,33 @@ namespace RC::Toolkit::UI
             const bool current = snap.has_world && row.name == snap.level;
             if (current) ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1), "%s  (current)", row.name.c_str());
             else ImGui::TextUnformatted(row.name.c_str());
+            if (const LevelNote* warn = note_for(ls, row))
+            {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f), "[!]");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", warn->note.c_str());
+            }
             ImGui::TableNextColumn();
             ImGui::TextDisabled("%s", row.path.c_str());
             ImGui::TableNextColumn();
             if (ImGui::SmallButton("Open"))
             {
-                session.open_level(row.path, ls.options);
-                ls.recent.erase(std::remove(ls.recent.begin(), ls.recent.end(), row.path), ls.recent.end());
-                ls.recent.insert(ls.recent.begin(), row.path);
-                if (ls.recent.size() > 6) ls.recent.pop_back();
+                // Known-bad levels, and travelling away from an unsafe level, ask first.
+                const LevelNote* warn = note_for(ls, row);
+                const LevelNote* origin = origin_warning(ls, snap.level);
+                if (warn || origin)
+                {
+                    ls.pending_path = row.path;
+                    ls.pending_note = warn ? warn->note : origin->note;
+                    ls.open_confirm = true;
+                }
+                else
+                {
+                    session.open_level(row.path, ls.options);
+                    ls.recent.erase(std::remove(ls.recent.begin(), ls.recent.end(), row.path), ls.recent.end());
+                    ls.recent.insert(ls.recent.begin(), row.path);
+                    if (ls.recent.size() > 6) ls.recent.pop_back();
+                }
             }
             ImGui::PopID();
         }

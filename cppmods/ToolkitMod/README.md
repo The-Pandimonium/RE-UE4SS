@@ -68,6 +68,13 @@ one target per 0.1 s; `IsValidObject` is O(1) (`UObject::IsReal` scans the whole
 
 * Calling `GetAllAssets` on the asset registry's class default object crashes the game (null read inside the engine).
   Fixed: the live registry is obtained from `AssetRegistryHelpers::GetAssetRegistry()`.
-* After loading any gameplay map from `preLoad` (`untitled_0`, `sandbox/flatgrass`, `sb_area0`), the game thread spins at
-  100% inside PhysX. It reproduces with UE4SS core only (no C++ mods), so it is not caused by the toolkit; whether it also
-  happens without UE4SS is untested. The main menu level loads and runs normally.
+* **Do not travel away from the boot screen (`preLoad`).** Opening any level before pressing Proceed leaves the game thread
+  spinning inside PhysX. Reproduced with all UE4SS hooks and C++ mods disabled, so it is the game, not the toolkit. From the
+  main menu level the same maps load normally (checked: `untitled_0`, `untitled_1`, `sandbox/flatgrass`, `NewFolder/tutorial2`,
+  `tutorial3`, `tutorial010`).
+* **`/Game/maps/NewFolder/tutorial` hangs the game** (no heartbeat from the game thread for 10+ minutes), also when the game's
+  own tutorial launcher (`ui_menu_C:openTutor("tutorial", "")`) opens it. `tutorial010` and `tutorial3` work.
+* The Levels tab reads `Mods/ToolkitMod/level_notes.json`: levels listed there get a `[!]` marker and ask for confirmation
+  before opening, and a banner warns when the current level is an unsafe place to travel from. Add your own entries.
+* Debug aid: environment variable `TOOLKIT_DEBUG_OPEN=<package path>` opens that level 12 s after the main menu appears,
+  through the same code path as the Levels tab.

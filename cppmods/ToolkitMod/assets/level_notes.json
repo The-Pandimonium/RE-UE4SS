@@ -1,0 +1,15 @@
+{
+  "levels": [
+    {
+      "level": "/Game/maps/NewFolder/tutorial",
+      "severity": "hang",
+      "note": "Hangs the game (the game thread spins inside PhysX) - even when the game's own tutorial button opens it. Use tutorial010 or tutorial3 instead."
+    }
+  ],
+  "unsafe_origins": [
+    {
+      "level": "preLoad",
+      "note": "You are on the boot screen. Travelling away from it hangs the game (PhysX spin) - press Proceed to reach the main menu first, then open levels from there."
+    }
+  ]
+}

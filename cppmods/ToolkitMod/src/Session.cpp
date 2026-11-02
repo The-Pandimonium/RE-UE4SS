@@ -1,5 +1,6 @@
 #include <Session.hpp>
 
+#include <cstdlib>
 #include <format>
 #include <fstream>
 
@@ -127,7 +128,19 @@ namespace RC::Toolkit
         m_since_update = 0.0;
         try
         {
-            refresh_now();
+            const SessionSnapshot snap = refresh_now();
+            // Debug aid: TOOLKIT_DEBUG_OPEN=<package path> opens that level 12 s after the main menu appears (the same path as the Levels tab).
+            static double menu_seconds = 0.0;
+            static bool debug_opened = false;
+            if (const char* wanted = std::getenv("TOOLKIT_DEBUG_OPEN"); wanted && !debug_opened)
+            {
+                menu_seconds = snap.level == "menu" ? menu_seconds + 0.25 : 0.0;
+                if (menu_seconds >= 12.0)
+                {
+                    debug_opened = true;
+                    open_level(wanted);
+                }
+            }
         }
         catch (...)
         {
