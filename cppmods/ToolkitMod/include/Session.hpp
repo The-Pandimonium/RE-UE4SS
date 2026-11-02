@@ -34,6 +34,7 @@ namespace RC::Toolkit
     {
         bool hud_markers{true};         // draw visible waypoints in the game world
         bool hotkeys{true};             // F6 quick waypoint, F7 back
+        bool level_guards{true};        // skip game events that freeze known-bad levels (see LevelGuards.hpp)
         double marker_max_distance{0};  // 0 = unlimited
         bool selftest{false};           // run the in-game self test once a pawn exists
         bool selftest_quit{false};      // close the game when the self test finishes
@@ -52,6 +53,8 @@ namespace RC::Toolkit
         auto load_config() -> void;
         auto save_config() const -> void;
         [[nodiscard]] auto config() const -> ToolkitConfig;
+        // Cheap (lock-free) read for per-call hooks.
+        [[nodiscard]] auto level_guards_enabled() const -> bool { return m_level_guards.load(std::memory_order_relaxed); }
         auto update_config(const ToolkitConfig& config) -> void;
 
         [[nodiscard]] auto snapshot() const -> SessionSnapshot;
@@ -88,6 +91,7 @@ namespace RC::Toolkit
         std::string m_engine_profile;
         std::string m_engine_adapter;
         double m_since_update{1.0};
+        std::atomic<bool> m_level_guards{true};
         bool m_installed{false};
     };
 } // namespace RC::Toolkit

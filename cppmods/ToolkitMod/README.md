@@ -68,13 +68,19 @@ one target per 0.1 s; `IsValidObject` is O(1) (`UObject::IsReal` scans the whole
 
 * Calling `GetAllAssets` on the asset registry's class default object crashes the game (null read inside the engine).
   Fixed: the live registry is obtained from `AssetRegistryHelpers::GetAssetRegistry()`.
-* **Do not travel away from the boot screen (`preLoad`).** Opening any level before pressing Proceed leaves the game thread
-  spinning inside PhysX. Reproduced with all UE4SS hooks and C++ mods disabled, so it is the game, not the toolkit. From the
-  main menu level the same maps load normally (checked: `untitled_0`, `untitled_1`, `sandbox/flatgrass`, `NewFolder/tutorial2`,
-  `tutorial3`, `tutorial010`).
-* **`/Game/maps/NewFolder/tutorial` hangs the game** (no heartbeat from the game thread for 10+ minutes), also when the game's
-  own tutorial launcher (`ui_menu_C:openTutor("tutorial", "")`) opens it. `tutorial010` and `tutorial3` work.
-* The Levels tab reads `Mods/ToolkitMod/level_notes.json`: levels listed there get a `[!]` marker and ask for confirmation
-  before opening, and a banner warns when the current level is an unsafe place to travel from. Add your own entries.
+* **Opening most levels directly freezes the game.** Not a deadlock: the game thread is running one very long operation that
+  spawns `prop_C` ("cube") actors without end (10,000 per 5 s at first, slowing down as physics gets crowded; 30,000+ after a
+  minute, never finishing in 10+ minutes; sound stops because the game thread never returns). Measured by counting
+  `BeginPlay` events after `open`: `untitled_1` (story) 1,398 props and settles, `tutorial010` 50 and settles, while
+  `untitled_0`, `sandbox/flatgrass`, `NewFolder/tutorial`, `NewFolder/tutorial2` keep growing. It happens with UE4SS's hooks and
+  all C++ mods disabled, so it is the game. It happens through the game's own tutorial launcher too (`openTutor("tutorial")`).
+  Ruled out: the toolkit, UE4SS hooks, the paused state, `GameInstance.CurrentLevel`, and the prop renderer actor
+  (`propProcessor_C` start/tick blocked: no effect). Not ruled out: the game mode (`mainGamemode_C`) running `loadObjects` for a
+  level that was never started through the save-slot launcher; blocking `loadObjects` only delayed the freeze by ~15 s.
+  Working entry points: the game's launcher (New game -> Launch), `untitled_1`, `tutorial010`, `tutorial3`.
+* **Do not travel away from the boot screen (`preLoad`)** before pressing Proceed: same freeze.
+* The Levels tab reads `Mods/ToolkitMod/level_notes.json` (advisory text, per-level `[!]` warnings with a confirmation before
+  opening, unsafe origin levels, and optional `guards`). A guard names a class and an event that is skipped for objects of
+  that class (`ProcessEvent`, and Blueprint-internal calls); with no guards configured no hooks are installed.
 * Debug aid: environment variable `TOOLKIT_DEBUG_OPEN=<package path>` opens that level 12 s after the main menu appears,
   through the same code path as the Levels tab.

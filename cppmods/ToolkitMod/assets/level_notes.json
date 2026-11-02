@@ -1,15 +1,32 @@
 {
+  "advisory": "Opening most development/sandbox/tutorial maps directly (not through the game's own launcher) can freeze the game: the game starts spawning cube props without end. Maps that work: untitled_1 (story), tutorial010, tutorial3.",
   "levels": [
     {
       "level": "/Game/maps/NewFolder/tutorial",
       "severity": "hang",
-      "note": "Hangs the game (the game thread spins inside PhysX) - even when the game's own tutorial button opens it. Use tutorial010 or tutorial3 instead."
+      "note": "Freezes the game when opened (endless prop spawning), also through the game's own tutorial button. Use tutorial010 or tutorial3."
+    },
+    {
+      "level": "/Game/maps/sandbox/flatgrass",
+      "severity": "hang",
+      "note": "Freezes the game when opened directly (endless prop spawning)."
+    },
+    {
+      "level": "/Game/maps/untitled_0",
+      "severity": "hang",
+      "note": "Freezes the game when opened directly (endless prop spawning)."
+    },
+    {
+      "level": "/Game/maps/NewFolder/tutorial2",
+      "severity": "hang",
+      "note": "Freezes the game when opened directly (endless prop spawning)."
     }
   ],
   "unsafe_origins": [
     {
       "level": "preLoad",
-      "note": "You are on the boot screen. Travelling away from it hangs the game (PhysX spin) - press Proceed to reach the main menu first, then open levels from there."
+      "note": "You are on the boot screen. Travelling away from it hangs the game - press Proceed to reach the main menu first, then open levels from there."
     }
-  ]
+  ],
+  "guards": []
 }

@@ -6,6 +6,7 @@ add_library(${TARGET} SHARED
         src/dllmain.cpp
         src/ToolkitMod.cpp
         src/Session.cpp
+        src/LevelGuards.cpp
         src/SelfTest.cpp
         src/Trainer/TargetResolver.cpp
         src/Trainer/TrainerEngine.cpp

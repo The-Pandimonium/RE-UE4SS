@@ -11,6 +11,7 @@
 #include <EngineCompat/Adapter.hpp>
 #include <EngineCompat/GameThread.hpp>
 #include <Helpers/String.hpp>
+#include <LevelGuards.hpp>
 #include <Session.hpp>
 
 namespace RC::Toolkit::UI
@@ -26,6 +27,7 @@ namespace RC::Toolkit::UI
     {
         std::vector<LevelNote> levels{};
         std::vector<LevelNote> unsafe_origins{};
+    std::string advisory{}; // shown at the top of the tab
     };
 
     namespace
@@ -50,6 +52,7 @@ namespace RC::Toolkit::UI
             // Per-game notes about levels (Mods/ToolkitMod/level_notes.json): known hangs, unsafe places to travel from.
             std::vector<LevelNote> notes;
             std::vector<LevelNote> unsafe_origins;
+            std::string advisory;
             bool notes_loaded{false};
             std::string pending_path;
             std::string pending_note;
@@ -72,6 +75,7 @@ namespace RC::Toolkit::UI
             {
                 ls.notes = std::move(loaded.levels);
                 ls.unsafe_origins = std::move(loaded.unsafe_origins);
+                ls.advisory = std::move(loaded.advisory);
             }
         }
 
@@ -134,7 +138,22 @@ namespace RC::Toolkit::UI
 
         if (snap.has_world) ImGui::Text("Current level: %s", snap.level.c_str());
         else ImGui::TextDisabled("No world loaded");
-if (const LevelNote* warn = origin_warning(ls, snap.level))            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f), "Warning: %s", warn->note.c_str());
+        if (!ls.advisory.empty()) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f), "%s", ls.advisory.c_str());
+        if (const LevelNote* warn = origin_warning(ls, snap.level))
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f), "Warning: %s", warn->note.c_str());
+        if (const auto& guards = LevelGuards::get().guards(); !guards.empty())
+        {
+            ToolkitConfig config = session.config();
+            if (ImGui::Checkbox("Level guards (skip game events listed in level_notes.json)", &config.level_guards)) session.update_config(config);
+            if (ImGui::IsItemHovered())
+            {
+                std::string text;
+                for (const auto& g : guards) text += g.text_class + "::" + g.text_function + " - " + g.reason + "\n";
+                ImGui::SetTooltip("%s", text.c_str());
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%llu event(s) skipped", LevelGuards::get().blocked_count());
+        }
         const std::string message = session.last_message();
         if (!message.empty()) ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1), "%s", message.c_str());
 

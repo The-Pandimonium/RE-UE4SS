@@ -44,6 +44,7 @@ namespace RC::Toolkit
         }
         std::lock_guard lock(m_mutex);
         m_config = config;
+        m_level_guards = config.level_guards;
     }
 
     auto Session::save_config() const -> void
@@ -72,6 +73,7 @@ namespace RC::Toolkit
         {
             std::lock_guard lock(m_mutex);
             m_config = config;
+            m_level_guards = config.level_guards;
         }
         save_config();
     }
