@@ -317,7 +317,7 @@ steps.push_back({"target selection + availability", 30, [](int) {               
                                      ActionDef set;
                                      set.kind = "set_property"; set.target = "player_pawn"; set.property = "BaseEyeHeight"; set.value = "{value}";
                                      CheatDef bounds = make_cheat("ph_bounds", "slider", {set});
-                                     bounds.min_expr = "{class:Pawn.BaseEyeHeight} / 2";
+                                     bounds.min_expr = "{class:class:Pawn:BaseEyeHeight} / 2"; // sloppy spelling
                                      bounds.max_expr = "{\"class:Pawn\".BaseEyeHeight} * 4";
                                      bounds.default_expr = "{current}";
                                      ActionDef call;

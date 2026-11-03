@@ -122,11 +122,20 @@ namespace RC::Toolkit
             const auto first = inner.find_first_not_of(' ');
             if (first == std::string::npos) return std::nullopt;
             inner = inner.substr(first, inner.find_last_not_of(' ') - first + 1);
-            const auto dot = inner.rfind('.');
-            if (dot == std::string::npos || dot == 0 || dot + 1 >= inner.size()) return std::nullopt;
-            auto objects = resolve_targets(inner.substr(0, dot), "first", 0);
-            if (objects.empty()) return std::nullopt;
-            return read_property_text(objects.front(), inner.substr(dot + 1));
+            // Tolerate a repeated "class:" prefix (the picker adds one, people type another).
+            while (inner.starts_with("class:class:")) inner.erase(0, 6);
+            // The property follows the last '.', or the last ':' when written "class:Name:Property".
+            for (const char separator : {'.', ':'})
+            {
+                const auto at = inner.rfind(separator);
+                if (at == std::string::npos || at == 0 || at + 1 >= inner.size()) continue;
+                const std::string target = inner.substr(0, at);
+                if (target == "class" || target == "object") continue;
+                auto objects = resolve_targets(target, "first", 0);
+                if (objects.empty()) continue;
+                if (auto text = read_property_text(objects.front(), inner.substr(at + 1))) return text;
+            }
+            return std::nullopt;
         }
 
         auto live_current(const ActionDef* action) -> std::optional<std::string>
