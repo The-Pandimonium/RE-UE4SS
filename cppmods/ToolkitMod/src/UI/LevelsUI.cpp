@@ -138,8 +138,8 @@ namespace RC::Toolkit::UI
         auto& session = Session::get();
         const SessionSnapshot snap = session.snapshot();
 
-        // The launch recipe applies while the game's own menu is on screen (see LevelLauncher).
-        const bool recipe_active = LevelLauncher::get().enabled && !LevelLauncher::get().description().empty() && snap.level == "menu";
+        // The launch recipe (see LevelLauncher) makes plain-open hangs moot.
+        const bool recipe_active = LevelLauncher::get().enabled && !LevelLauncher::get().description().empty();
         if (!ls.loaded && !ls.loading) request_refresh();
         load_notes(ls);
 
@@ -187,7 +187,7 @@ namespace RC::Toolkit::UI
         {
             ImGui::SameLine();
             bool use_recipe = LevelLauncher::get().enabled;
-            if (ImGui::Checkbox("open like the game's menu", &use_recipe)) LevelLauncher::get().enabled = use_recipe;
+            if (ImGui::Checkbox("open like the game's loader", &use_recipe)) LevelLauncher::get().enabled = use_recipe;
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", LevelLauncher::get().description().c_str());
         }
         ImGui::SameLine();

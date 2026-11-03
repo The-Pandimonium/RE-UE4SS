@@ -10,6 +10,7 @@
 #include <EngineCompat/GameThread.hpp>
 #include <EngineCompat/Reflect.hpp>
 #include <Helpers/String.hpp>
+#include <LevelLauncher.hpp>
 #include <Session.hpp>
 #include <Trainer/TargetResolver.hpp>
 #include <Unreal/CoreUObject/UObject/Class.hpp>
@@ -254,29 +255,44 @@ namespace RC::Toolkit
             m_requested_arm = true;
             arm();
         }
-        // TOOLKIT_OPEN_LEVEL=<package path> opens that level through the level switcher once the menu has been up a while,
-        // so the level switcher can be tried without anyone clicking through the game's menu.
-        if (!m_opened_test_level)
+        // TOOLKIT_AUTO_BOOT=1 leaves the boot screen by calling the game's level loader, as the screen itself does after "Play game".
+        if (!m_booted && std::getenv("TOOLKIT_AUTO_BOOT") && m_clock > 6.0 && to_string(Compat::AdapterRegistry::Get().current_level_name()) == "preLoad")
         {
-            if (const char* wanted = std::getenv("TOOLKIT_OPEN_LEVEL"))
+            m_booted = true;
+            std::string error;
+            const bool ok = LevelLauncher::get().open("menu", error);
+            Output::send<LogLevel::Normal>(STR("[ToolkitMod] Auto boot to menu: {}\n"), ok ? std::wstring(L"ok") : ensure_str(error));
+        }
+        // TOOLKIT_OPEN_LEVEL=<package path>[;<package path>...] opens those levels through the level switcher, the first once
+        // the menu has been up a while and each next one 25 s after the previous, so the level switcher can be tried without
+        // anyone at the keyboard.
+        if (const char* wanted = std::getenv("TOOLKIT_OPEN_LEVEL"))
+        {
+            std::vector<std::string> paths;
+            for (size_t start = 0; start <= std::string(wanted).size();)
             {
-                if (to_string(Compat::AdapterRegistry::Get().current_level_name()) == "menu")
-                {
-                    if (m_menu_since == 0.0) m_menu_since = m_clock;
-                    if (m_clock - m_menu_since > 8.0)
-                    {
-                        m_opened_test_level = true;
-                        m_test_opened_at = m_clock;
-                        Session::get().open_level(wanted);
-                    }
-                }
+                const std::string all = wanted;
+                const auto end = all.find(';', start);
+                paths.push_back(all.substr(start, end == std::string::npos ? std::string::npos : end - start));
+                if (end == std::string::npos) break;
+                start = end + 1;
+            }
+            const bool on_menu = to_string(Compat::AdapterRegistry::Get().current_level_name()) == "menu";
+            if (m_test_index == 0 && on_menu && m_menu_since == 0.0) m_menu_since = m_clock;
+            const bool due = m_test_index == 0 ? (m_menu_since != 0.0 && m_clock - m_menu_since > 8.0) : (m_clock - m_test_opened_at > 25.0);
+            if (m_test_index < paths.size() && due)
+            {
+                Output::send<LogLevel::Normal>(STR("[ToolkitMod] Test open #{}: {}\n"), m_test_index + 1, ensure_str(paths[m_test_index]));
+                m_test_opened_at = m_clock;
+                Session::get().open_level(paths[m_test_index]);
+                ++m_test_index;
             }
         }
-        // If the level did not change within 15 s of the test open, write down what happened anyway.
-        else if (m_test_opened_at > 0.0 && m_clock - m_test_opened_at > 15.0)
+        // If the level did not change within 15 s of a test open, write down what happened anyway.
+        if (m_test_opened_at > 0.0 && m_clock - m_test_opened_at > 15.0 && m_armed && !m_changed && m_test_index > 0)
         {
-            m_test_opened_at = 0.0;
-            if (m_armed && !m_changed) disarm();
+            m_test_opened_at = m_clock; // not again for a while
+            disarm();
         }
         if (!m_armed) return;
         InsideRecorder guard;

@@ -48,21 +48,31 @@ walk the Blueprint call stack of the first spawn; or compare `mainGamemode_C` va
 
 ## Resolution
 
-The "Open" section above is answered: it is not any actor in the maps, it is what the game's **menu** does before it opens one.
-Recorded with the toolkit's travel recorder while using Start Game -> Sandbox -> slot -> Apply:
+The "Open" section above is answered, and it is not any actor in the maps: **the game never uses `open`.** Recorded with the
+toolkit's travel recorder (every Blueprint call, with arguments, while using Play game / Start Game -> Sandbox -> slot ->
+Apply):
 
-1. Selecting a slot runs the slot entry's click handler (`uicomp_saveSlot_C::BndEvt__button_select...`), which calls
-   `ui_saveSlots_C::selectSlot_sub` and prepares the rules panel.
-2. Apply (`ui_saveSlots_C::BndEvt__button_apply...`) calls `mainGameInstance_C::setSaveSlotObject(save_gameInst, SlotName,
-   folderSlotName, metadataObject, save_persistent)`, then `tryLaunch`.
-3. `lib_C::loadLevel(Level, Option=<22-char random token>, __WorldContext)` sets `CurrentLevel`/`baseLevel`/
-   `loadObjectsFromSlot`, checks `lib_getFunc_C::isAreaLevelRestricted` and calls `mainGamemode_C::transition(LevelName)`.
+* The boot screen's Play game button calls `lib_C::loadLevel(Level=menu, Option=PQXYyeofZ8cr5rJD4YXLVw, __WorldContext=<widget>)`.
+* Apply on a sandbox slot calls `mainGameInstance_C::setSaveSlotObject(...)` and then
+  `lib_C::loadLevel(Level=flatgrass, Option=PQXYyeofZ8cr5rJD4YXLVw, __WorldContext=<widget>)`.
+* `loadLevel` checks `lib_getFunc_C::isAreaLevelRestricted`, stores the token in `GameInstance.NewVar_1`, and calls
+  `mainGamemode_C::transition(LevelName)`.
 
-A plain `open` has no save objects and no slot, so `mainGamemode_C` loads objects from nothing and the prop spawner never
-finishes. A hand-built empty save does not help either (tried: it froze the same way); the real save objects the menu loads
-do. Also tried and failed on the way: calling `loadLevel` directly (its hidden world-context argument must be set or the
-restriction check silently does nothing) and pressing Apply on the first `ui_saveSlots_C` found (there are two; only the one in
-the active menu has a slot selected).
+Experiments (all hands-off, using `loadLevel` called directly from the toolkit):
 
-Working recipe (see `LevelLauncher`): open the Sandbox screen, select the slot entry of a copy of the `first` folder, run the
-Apply handler, and replace the `Level` argument of `loadLevel` as it runs. `flatgrass` and `untitled_0` open and run.
+| call | result |
+| --- | --- |
+| plain `open` (no token) | endless `prop_C` spawn |
+| `loadLevel` with a random 22-char token and empty save objects | same freeze |
+| `loadLevel` with the recorded token, empty save objects | opens |
+| `loadLevel` with the recorded token, no save objects at all | `untitled_0` and `flatgrass` open and run |
+| `loadLevel` with a different token | `untitled_0` freezes (log stops, memory climbs) |
+
+So the token is what matters; save slots, folders and the menu are not needed. The earlier detours (a hand-built save, driving the
+menu's widgets) failed or worked for incidental reasons: the hidden world-context argument must be filled in, or the
+restriction check silently does nothing; and the game keeps two `ui_saveSlots_C` screens in memory, so pressing Apply on the
+first one found does nothing.
+
+`LevelLauncher` implements it (token read live from `GameInstance.NewVar_1`, falling back to the recorded constant). Hopping
+`untitled_0` -> `flatgrass` -> `NewFolder/tutorial` -> `NewFolder/tutorial2` -> `untitled_1` from inside levels stays responsive.
+Open question: what the token is checked against inside the game mode (a build/dev-mode key, apparently); not needed to use it.

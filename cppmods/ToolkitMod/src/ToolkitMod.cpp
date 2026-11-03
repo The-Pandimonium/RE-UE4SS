@@ -106,7 +106,6 @@ namespace RC::Toolkit
         WaypointRenderer::get().install();
         LevelGuards::get().install();
         TravelRecorder::get().install();
-        LevelLauncher::get().install();
 
         // Engine detection runs reflection calls, so do it on the game thread once ticks are flowing.
         Compat::GameThread::Post([] {

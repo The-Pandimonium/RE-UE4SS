@@ -55,7 +55,8 @@ namespace RC::Toolkit
         uint64_t m_sequence_at_change{0};
         bool m_changed{false};
         bool m_requested_arm{false};
-        bool m_opened_test_level{false};
+        size_t m_test_index{0};
+        bool m_booted{false};
         double m_test_opened_at{0};
         double m_menu_since{0};
         double m_changed_at{0};

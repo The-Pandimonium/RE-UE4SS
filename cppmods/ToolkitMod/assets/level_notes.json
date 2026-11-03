@@ -1,5 +1,5 @@
 {
-  "advisory": "Voices of the Void: from the main menu this tab opens levels through the game's own Sandbox screen, which is what makes dev/sandbox/tutorial maps load. From inside a level a plain open is used and many of those maps freeze (endless cube props), so return to the main menu first.",
+  "advisory": "Voices of the Void: levels are opened through the game's own loader (with the token it expects), so dev/sandbox/tutorial maps load from anywhere. Switch that off with the checkbox to see what a plain open does: most of those maps freeze (endless cube props).",
   "levels": [
     {
       "level": "/Game/maps/NewFolder/tutorial",
@@ -29,22 +29,14 @@
     }
   ],
   "launch": {
-    "description": "Voices of the Void builds a save slot before it opens a level, and a plain `open` skips that (most maps then spawn props without end). This drives the game's own Sandbox screen: it opens it, selects a slot and presses Apply, with only the level swapped. It uses a copy of your 'first' slot folder (toolkit_sandbox), so your own saves are not touched.",
+    "description": "Voices of the Void opens every level through its own loader, lib_C::loadLevel(Level, Option, world context), and passes the same constant Option token each time. A plain `open` passes none, and then most maps run an endless prop spawner (the game looks frozen). This calls the game's loader the way the game does, from any level.",
     "applies_if_class": "mainGameInstance_C",
-    "menu_target": "class:ui_menu_C",
-    "open_function": "openSandbox",
-    "slots_target": "class:ui_saveSlots_C",
-    "select_function": "BndEvt__button_select_K2Node_ComponentBoundEvent_0_OnButtonClickedEvent__DelegateSignature",
-    "select_param": "",
-    "apply_function": "BndEvt__button_apply_K2Node_ComponentBoundEvent_9_OnButtonClickedEvent__DelegateSignature",
-    "folder_class": "uicomp_saveSlotFolder_C",
-    "folder_path_property": "Path",
-    "entry_property": "slotMain",
+    "level_class": "lib_C",
     "level_function": "loadLevel",
     "level_param": "Level",
-    "save_root": "%LOCALAPPDATA%/VotV/Saved/SaveGames",
-    "copy_from_folder": "first",
-    "work_folder": "toolkit_sandbox"
+    "option_param": "Option",
+    "option_property": "NewVar_1",
+    "option_default": "PQXYyeofZ8cr5rJD4YXLVw"
   },
   "guards": []
 }

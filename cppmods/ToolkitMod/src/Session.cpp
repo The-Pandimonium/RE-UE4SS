@@ -212,8 +212,8 @@ namespace RC::Toolkit
         GameThread::Post([this, package_path, options] {
             auto& adapter = AdapterRegistry::Get();
             // Games whose menu does more than load the map get their own recipe (see LevelLauncher).
-            // The recipe drives the menu, so it applies while the menu is showing; from inside a level a plain `open` is used.
-            if (auto& launcher = LevelLauncher::get(); launcher.available() && launcher.menu_showing())
+            // Games whose own loader does more than `open` get a recipe (see LevelLauncher).
+            if (auto& launcher = LevelLauncher::get(); launcher.available())
             {
                 std::string error;
                 const bool opened = launcher.open(package_path, error);
