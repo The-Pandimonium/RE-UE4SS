@@ -7,6 +7,8 @@ add_library(${TARGET} SHARED
         src/ToolkitMod.cpp
         src/Session.cpp
         src/LevelGuards.cpp
+        src/TravelRecorder.cpp
+        src/LevelLauncher.cpp
         src/SelfTest.cpp
         src/Trainer/TargetResolver.cpp
         src/Trainer/TrainerEngine.cpp

@@ -93,16 +93,23 @@ one target per 0.1 s; `IsValidObject` is O(1) (`UObject::IsReal` scans the whole
 
 * Calling `GetAllAssets` on the asset registry's class default object crashes the game (null read inside the engine).
   Fixed: the live registry is obtained from `AssetRegistryHelpers::GetAssetRegistry()`.
-* **Opening most levels directly freezes the game.** Not a deadlock: the game thread is running one very long operation that
-  spawns `prop_C` ("cube") actors without end (10,000 per 5 s at first, slowing down as physics gets crowded; 30,000+ after a
-  minute, never finishing in 10+ minutes; sound stops because the game thread never returns). Measured by counting
-  `BeginPlay` events after `open`: `untitled_1` (story) 1,398 props and settles, `tutorial010` 50 and settles, while
-  `untitled_0`, `sandbox/flatgrass`, `NewFolder/tutorial`, `NewFolder/tutorial2` keep growing. It happens with UE4SS's hooks and
-  all C++ mods disabled, so it is the game. It happens through the game's own tutorial launcher too (`openTutor("tutorial")`).
-  Ruled out: the toolkit, UE4SS hooks, the paused state, `GameInstance.CurrentLevel`, and the prop renderer actor
-  (`propProcessor_C` start/tick blocked: no effect). Not ruled out: the game mode (`mainGamemode_C`) running `loadObjects` for a
-  level that was never started through the save-slot launcher; blocking `loadObjects` only delayed the freeze by ~15 s.
-  Working entry points: the game's launcher (New game -> Launch), `untitled_1`, `tutorial010`, `tutorial3`.
+* **A plain `open` of most levels freezes the game, and the cause is known.** The game's menu does more than load a map: it
+  builds a save slot first (real save objects, `folderSlotName`/`loadedSlotName`, `loadObjectsFromSlot`) and then calls its own
+  `lib_C::loadLevel(Level, Option=<random token>)`, which runs `mainGamemode_C::transition`. Without that, the game mode runs
+  its object loader against no save and spawns `prop_C` ("cube") actors without end (30,000+; the game thread never returns,
+  sound stops). Found with the travel recorder (below). **Fix:** the Levels tab, while the game's main menu is showing, drives
+  the game's own Sandbox screen: `openSandbox`, the slot entry's click handler, then the Apply button's handler, with the
+  `Level` argument of `loadLevel` replaced by the level you picked. It works on a copy of your `first` save folder
+  (`toolkit_sandbox`), so your own saves are not touched. Verified: `sandbox/flatgrass` and `untitled_0` (both used to
+  freeze) open normally. Everything is data in the `launch` block of `level_notes.json`; the checkbox "open like the game's
+  menu" switches it off. From inside a level (no menu) a plain `open` is used and those maps can still freeze.
+  A subtle point that cost many tries: the game keeps **two** `ui_saveSlots_C` screens in memory (one per menu instance), and
+  pressing Apply on the wrong one silently does nothing, so every widget has to come from the same `ui_menu_C` instance.
+* **Travel recorder** (Levels tab, "Record the game's own level opening..."; or `TOOLKIT_RECORD_TRAVEL=1`): while armed it notes
+  every function the game calls (first-seen order, counts), the arguments and return values of the launch functions, the
+  GameInstance before/after and the game mode's properties, and writes one `travel_trace_<from>_to_<to>.txt` per level change.
+  `TOOLKIT_OPEN_LEVEL=<package path>` opens a level through the switcher 8 s after the menu appears (for runs without anyone
+  at the keyboard). See `docs/investigations/votv-level-freeze.md`.
 * **Do not travel away from the boot screen (`preLoad`)** before pressing Proceed: same freeze.
 * The Levels tab reads `Mods/ToolkitMod/level_notes.json` (advisory text, per-level `[!]` warnings with a confirmation before
   opening, unsafe origin levels, and optional `guards`). A guard names a class and an event that is skipped for objects of

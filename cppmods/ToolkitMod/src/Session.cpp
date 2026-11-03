@@ -9,6 +9,7 @@
 #include <DynamicOutput/DynamicOutput.hpp>
 #include <EngineCompat/GameThread.hpp>
 #include <Helpers/String.hpp>
+#include <LevelLauncher.hpp>
 
 namespace RC::Toolkit
 {
@@ -210,6 +211,17 @@ namespace RC::Toolkit
     {
         GameThread::Post([this, package_path, options] {
             auto& adapter = AdapterRegistry::Get();
+            // Games whose menu does more than load the map get their own recipe (see LevelLauncher).
+            // The recipe drives the menu, so it applies while the menu is showing; from inside a level a plain `open` is used.
+            if (auto& launcher = LevelLauncher::get(); launcher.available() && launcher.menu_showing())
+            {
+                std::string error;
+                const bool opened = launcher.open(package_path, error);
+                Output::send<LogLevel::Normal>(STR("[ToolkitMod] Level launch recipe for {}: {}\n"), ensure_str(package_path), opened ? std::wstring(L"started") : ensure_str(error));
+                if (opened) set_message("Opening level " + package_path + " the way the game's menu does ...");
+                else set_message("Could not open " + package_path + ": " + error);
+                return;
+            }
             if (adapter.open_level(ensure_str(package_path), ensure_str(options)))
                 set_message("Opening level " + package_path + " ...");
             else

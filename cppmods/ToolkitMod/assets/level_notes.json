@@ -1,5 +1,5 @@
 {
-  "advisory": "Opening most development/sandbox/tutorial maps directly (not through the game's own launcher) can freeze the game: the game starts spawning cube props without end. Maps that work: untitled_1 (story), tutorial010, tutorial3.",
+  "advisory": "Voices of the Void: from the main menu this tab opens levels through the game's own Sandbox screen, which is what makes dev/sandbox/tutorial maps load. From inside a level a plain open is used and many of those maps freeze (endless cube props), so return to the main menu first.",
   "levels": [
     {
       "level": "/Game/maps/NewFolder/tutorial",
@@ -28,5 +28,23 @@
       "note": "You are on the boot screen. Travelling away from it hangs the game - press Proceed to reach the main menu first, then open levels from there."
     }
   ],
+  "launch": {
+    "description": "Voices of the Void builds a save slot before it opens a level, and a plain `open` skips that (most maps then spawn props without end). This drives the game's own Sandbox screen: it opens it, selects a slot and presses Apply, with only the level swapped. It uses a copy of your 'first' slot folder (toolkit_sandbox), so your own saves are not touched.",
+    "applies_if_class": "mainGameInstance_C",
+    "menu_target": "class:ui_menu_C",
+    "open_function": "openSandbox",
+    "slots_target": "class:ui_saveSlots_C",
+    "select_function": "BndEvt__button_select_K2Node_ComponentBoundEvent_0_OnButtonClickedEvent__DelegateSignature",
+    "select_param": "",
+    "apply_function": "BndEvt__button_apply_K2Node_ComponentBoundEvent_9_OnButtonClickedEvent__DelegateSignature",
+    "folder_class": "uicomp_saveSlotFolder_C",
+    "folder_path_property": "Path",
+    "entry_property": "slotMain",
+    "level_function": "loadLevel",
+    "level_param": "Level",
+    "save_root": "%LOCALAPPDATA%/VotV/Saved/SaveGames",
+    "copy_from_folder": "first",
+    "work_folder": "toolkit_sandbox"
+  },
   "guards": []
 }

@@ -8,6 +8,8 @@
 #include <EngineCompat/GameThread.hpp>
 #include <Helpers/String.hpp>
 #include <LevelGuards.hpp>
+#include <TravelRecorder.hpp>
+#include <LevelLauncher.hpp>
 #include <SelfTest.hpp>
 #include <Session.hpp>
 #include <Teleport/WaypointRenderer.hpp>
@@ -59,6 +61,7 @@ namespace RC::Toolkit
         WaypointStore::get().load();
         TrainerEngine::get().reload();
         LevelGuards::get().load((data_root() / "level_notes.json").string());
+        LevelLauncher::get().load((data_root() / "level_notes.json").string());
 
         register_tab(STR("Trainer"), [](CppUserModBase*) {
             UE4SS_ENABLE_IMGUI();
@@ -102,6 +105,8 @@ namespace RC::Toolkit
         TrainerEngine::get().install();
         WaypointRenderer::get().install();
         LevelGuards::get().install();
+        TravelRecorder::get().install();
+        LevelLauncher::get().install();
 
         // Engine detection runs reflection calls, so do it on the game thread once ticks are flowing.
         Compat::GameThread::Post([] {

@@ -13,6 +13,8 @@
 #include <Helpers/String.hpp>
 #include <LevelGuards.hpp>
 #include <Session.hpp>
+#include <TravelRecorder.hpp>
+#include <LevelLauncher.hpp>
 
 namespace RC::Toolkit::UI
 {
@@ -79,11 +81,14 @@ namespace RC::Toolkit::UI
             }
         }
 
-        auto note_for(const LevelState& ls, const LevelRow& row) -> const LevelNote*
+        auto note_for(const LevelState& ls, const LevelRow& row, bool recipe_active) -> const LevelNote*
         {
             for (const auto& n : ls.notes)
             {
-                if (n.level == row.path || n.level == row.name) return &n;
+                if (n.level != row.path && n.level != row.name) continue;
+                // A level that hangs on a plain `open` is fine when the game's own menu path is used to open it.
+                if (recipe_active && n.severity == "hang") continue;
+                return &n;
             }
             return nullptr;
         }
@@ -133,6 +138,8 @@ namespace RC::Toolkit::UI
         auto& session = Session::get();
         const SessionSnapshot snap = session.snapshot();
 
+        // The launch recipe applies while the game's own menu is on screen (see LevelLauncher).
+        const bool recipe_active = LevelLauncher::get().enabled && !LevelLauncher::get().description().empty() && snap.level == "menu";
         if (!ls.loaded && !ls.loading) request_refresh();
         load_notes(ls);
 
@@ -176,12 +183,34 @@ namespace RC::Toolkit::UI
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::Checkbox("game levels only", &ls.game_only);
+        if (!LevelLauncher::get().description().empty())
+        {
+            ImGui::SameLine();
+            bool use_recipe = LevelLauncher::get().enabled;
+            if (ImGui::Checkbox("open like the game's menu", &use_recipe)) LevelLauncher::get().enabled = use_recipe;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", LevelLauncher::get().description().c_str());
+        }
         ImGui::SameLine();
         ImGui::SetNextItemWidth(200);
         ImGui::InputTextWithHint("##levelfilter", "filter...", &ls.filter);
         ImGui::SetNextItemWidth(320);
         ImGui::InputTextWithHint("Travel options", "e.g. ?listen   (optional)", &ls.options);
         if (ls.loading) ImGui::TextDisabled("Reading the asset registry...");
+
+        // Learn what the game's own menu does when it opens a level (the Levels tab alone only issues `open`).
+        auto& recorder = TravelRecorder::get();
+        if (recorder.armed())
+        {
+            if (ImGui::Button("Stop recording")) recorder.disarm();
+        }
+        else if (ImGui::Button("Record the game's own level opening..."))
+        {
+            recorder.arm();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Arm, then open a level through the game's menu (e.g. Start Game -> Sandbox).\nWhat the game calls and sets is written to Mods/ToolkitMod/travel_trace.txt.");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", recorder.status().c_str());
 
         std::vector<LevelRow> rows;
         {
@@ -240,7 +269,7 @@ namespace RC::Toolkit::UI
             const bool current = snap.has_world && row.name == snap.level;
             if (current) ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1), "%s  (current)", row.name.c_str());
             else ImGui::TextUnformatted(row.name.c_str());
-            if (const LevelNote* warn = note_for(ls, row))
+            if (const LevelNote* warn = note_for(ls, row, recipe_active))
             {
                 ImGui::SameLine();
                 ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f), "[!]");
@@ -252,7 +281,7 @@ namespace RC::Toolkit::UI
             if (ImGui::SmallButton("Open"))
             {
                 // Known-bad levels, and travelling away from an unsafe level, ask first.
-                const LevelNote* warn = note_for(ls, row);
+                const LevelNote* warn = note_for(ls, row, recipe_active);
                 const LevelNote* origin = origin_warning(ls, snap.level);
                 if (warn || origin)
                 {

@@ -43,7 +43,7 @@ namespace RC::Toolkit
 
     auto target_roots() -> const std::vector<std::string>&
     {
-        static const std::vector<std::string> roots{"player_pawn", "player_controller", "game_mode", "game_state", "world", "world_settings", "hud"};
+        static const std::vector<std::string> roots{"player_pawn", "player_controller", "game_mode", "game_state", "world", "world_settings", "game_instance", "hud"};
         return roots;
     }
 
@@ -93,6 +93,7 @@ namespace RC::Toolkit
         else if (root == "game_state") current.push_back(adapter.game_state());
         else if (root == "world") current.push_back(adapter.world());
         else if (root == "world_settings") current.push_back(adapter.world_settings());
+        else if (root == "game_instance") current.push_back(Compat::Reflect::GetObjectProperty(adapter.world(), L"OwningGameInstance"));
         else if (root == "hud") current.push_back(adapter.hud(adapter.player_controller()));
         else if (root.starts_with("class:"))
         {
