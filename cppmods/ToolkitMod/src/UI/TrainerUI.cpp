@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <map>
 
 #include <imgui.h>
 #include <misc/cpp/imgui_stdlib.h>
@@ -376,33 +377,101 @@ namespace RC::Toolkit::UI
             ImGui::EndPopup();
         }
 
-        auto render_map_editor(const char* label, std::map<std::string, std::string>& params) -> void
+        // Parameters of the chosen function, read from the live object once per (target, function) and then cached.
+        struct ParamCache
         {
-            ImGui::TextDisabled("%s", label);
-            std::string remove_key;
-            for (auto& [key, value] : params)
+            std::string key{};
+            FunctionInfo info{};
+        };
+
+        auto function_info_for(const void* id, const std::string& target, const std::string& function, bool force) -> const FunctionInfo&
+        {
+            static std::map<const void*, ParamCache> cache; // one entry per parameter list being edited
+            ParamCache& entry = cache[id];
+            const std::string key = target + "|" + function;
+            if (force || entry.key != key)
             {
-                ImGui::PushID(key.c_str());
-                ImGui::SetNextItemWidth(160);
-                ImGui::TextUnformatted(key.c_str());
+                entry.key = key;
+                entry.info = function.empty() ? FunctionInfo{} : inspect_function(target, function);
+                if (function.empty()) entry.info.error = "choose a function first";
+            }
+            return entry.info;
+        }
+
+        // Preset values offered next to a parameter's text box, chosen from the parameter's declared type.
+        auto render_param_presets(const ParamRow& row, std::string& value) -> void
+        {
+            std::vector<std::string> presets;
+            switch (row.kind)
+            {
+            case ParamRow::Kind::Bool: presets = {"true", "false", "{value}"}; break;
+            case ParamRow::Kind::Enum: presets = row.options; presets.push_back("{value}"); break;
+            case ParamRow::Kind::Integer:
+            case ParamRow::Kind::Number: presets = {"{value}", "{current}", "0", "1"}; break;
+            default: break;
+            }
+            if (presets.empty()) return;
+            ImGui::SameLine();
+            if (ImGui::BeginCombo("##presets", nullptr, ImGuiComboFlags_NoPreview))
+            {
+                for (const auto& preset : presets)
+                {
+                    if (ImGui::Selectable(preset.c_str(), value == preset)) value = preset;
+                }
+                ImGui::EndCombo();
+            }
+        }
+
+        // The parameters are the function's own: names and types come from the engine, nothing is invented here.
+        auto render_param_editor(const char* label, const std::string& target, const std::string& function, std::map<std::string, std::string>& params) -> void
+        {
+            ImGui::PushID(label);
+            ImGui::TextDisabled("%s", label);
+            ImGui::SameLine();
+            const bool reload = ImGui::SmallButton("Reload");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Read the parameters from the live function again");
+            const FunctionInfo& info = function_info_for(&params, target, function, reload);
+
+            if (!info.found)
+            {
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f), "Parameters unavailable: %s", info.error.c_str());
+            }
+            else if (info.inputs.empty())
+            {
+                ImGui::TextDisabled("%s takes no parameters.", info.function_name.c_str());
+            }
+            for (const ParamRow& row : info.inputs)
+            {
+                ImGui::PushID(row.name.c_str());
+                std::string value;
+                if (auto it = params.find(row.name); it != params.end()) value = it->second;
+                ImGui::Text("%s", row.name.c_str());
                 ImGui::SameLine(190);
-                ImGui::SetNextItemWidth(220);
-                ImGui::InputText("##value", &value);
-                ImGui::SameLine();
-                if (ImGui::SmallButton("x")) remove_key = key;
+                ImGui::TextDisabled("%s", row.type.c_str());
+                ImGui::SameLine(300);
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::InputTextWithHint("##value", "default", &value)) {}
+                render_param_presets(row, value);
+                // Empty means "leave at the engine default", so the file only keeps what was actually set.
+                if (value.empty()) params.erase(row.name);
+                else params[row.name] = value;
                 ImGui::PopID();
             }
-            if (!remove_key.empty()) params.erase(remove_key);
-            static std::string new_key;
-            ImGui::PushID(label);
-            ImGui::SetNextItemWidth(160);
-            ImGui::InputTextWithHint("##newkey", "parameter name", &new_key);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Add parameter") && !new_key.empty())
+            // Entries that no longer match the function (renamed in a game update, or typed into an older file).
+            std::string stale;
+            for (const auto& [key, value] : params)
             {
-                params.emplace(new_key, "");
-                new_key.clear();
+                bool known = false;
+                for (const ParamRow& row : info.inputs) known = known || row.name == key;
+                if (known || !info.found) continue;
+                ImGui::PushID(key.c_str());
+                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "%s = %s  (not a parameter of this function)", key.c_str(), value.c_str());
+                ImGui::SameLine();
+                if (ImGui::SmallButton("remove")) stale = key;
+                ImGui::PopID();
             }
+            if (!stale.empty()) params.erase(stale);
+            for (const auto& output : info.outputs) ImGui::TextDisabled("returns %s", output.c_str());
             ImGui::PopID();
         }
 
@@ -502,10 +571,10 @@ namespace RC::Toolkit::UI
                 }
                 if (action.kind == "call_function")
                 {
-                    render_map_editor("parameters", action.params);
+                    render_param_editor("parameters", action.target, action.function, action.params);
                     ImGui::SetNextItemWidth(260);
                     ImGui::InputText("off function", &action.off_function);
-                    if (!action.off_function.empty()) render_map_editor("off parameters", action.off_params);
+                    if (!action.off_function.empty()) render_param_editor("off parameters", action.target, action.off_function, action.off_params);
                 }
                 if (action.kind == "block_function")
                 {

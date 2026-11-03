@@ -31,6 +31,31 @@ namespace RC::Toolkit
         std::vector<FuncRow> functions{};
     };
 
+    // One input parameter of a function, as the engine declares it (the same CPF_Parm walk the blueprint stub
+    // generator does). The trainer fills these in by name and converts the text to `kind` when calling.
+    struct ParamRow
+    {
+        enum class Kind { Bool, Integer, Number, Enum, Text, Object, Struct, Other };
+        std::string name{};
+        std::string type{};                // "float", "bool", "Vector", "Object<Pawn>", ...
+        Kind kind{Kind::Other};
+        std::vector<std::string> options{}; // enum entries (short names)
+        bool editable{true};               // false for kinds the trainer cannot write from text (rare)
+    };
+
+    struct FunctionInfo
+    {
+        bool found{false};
+        std::string error{};
+        std::string function_name{};
+        std::vector<ParamRow> inputs{};
+        std::vector<std::string> outputs{}; // "type name", informational (out params and the return value)
+    };
+
+    // Looks up `function` (optionally "Class:Function") on the first object `target` resolves to and lists its parameters.
+    // Blocks the calling thread (UI) until the game thread answered, or times out.
+    auto inspect_function(const std::string& target, const std::string& function) -> FunctionInfo;
+
     // Resolves a target expression on the game thread and lists its properties (with live values) and functions.
     // Blocks the calling thread (UI) until the game thread answered, or times out.
     auto inspect_target(const std::string& expression) -> TargetInfo;

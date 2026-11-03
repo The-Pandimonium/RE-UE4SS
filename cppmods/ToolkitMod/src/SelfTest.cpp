@@ -381,6 +381,37 @@ steps.push_back({"target selection + availability", 30, [](int) {               
                                  return pending();
                              }});
 
+            // call_function parameters come from the function's own signature and are converted to the declared types.
+            steps.push_back({"trainer function parameters (discovery + typed casting)", 30, [](int) {
+                                 UObject* p = pawn();
+                                 auto before = Reflect::GetPropertyNumber(p, L"bHidden");
+                                 if (!before) return pass("SKIPPED: pawn has no bHidden");
+                                 const auto info = inspect_function("player_pawn", "SetActorHiddenInGame");
+                                 if (!info.found) return fail("inspect_function: " + info.error);
+                                 if (info.inputs.size() != 1 || info.inputs[0].name != "bNewHidden" || info.inputs[0].kind != ParamRow::Kind::Bool)
+                                     return fail("SetActorHiddenInGame signature not read as one bool input, got " + std::to_string(info.inputs.size()) + " input(s)");
+                                 const auto bad = inspect_function("player_pawn", "NoSuchFunction_XYZ");
+                                 if (bad.found || bad.error.empty()) return fail("an unknown function must be reported");
+
+                                 // Arithmetic text into a bool parameter, and a plain word, both end up as the right type.
+                                 ActionDef a;
+                                 a.kind = "call_function"; a.target = "player_pawn"; a.function = "SetActorHiddenInGame";
+                                 a.params[info.inputs[0].name] = "1 - 1";
+                                 const auto off = TrainerEngine::get().test_cheat(make_cheat("typed_off", "button", {a}), true, 1.0);
+                                 const auto off_value = Reflect::GetPropertyNumber(p, L"bHidden");
+                                 a.params[info.inputs[0].name] = "true";
+                                 TrainerEngine::get().test_cheat(make_cheat("typed_on", "button", {a}), true, 1.0);
+                                 const auto on_value = Reflect::GetPropertyNumber(p, L"bHidden");
+                                 // A value that cannot be the declared type is an error, not a silent zero.
+                                 a.params[info.inputs[0].name] = "banana";
+                                 const auto rejected = TrainerEngine::get().test_cheat(make_cheat("typed_bad", "button", {a}), true, 1.0);
+                                 Reflect::SetPropertyNumber(p, L"bHidden", *before);
+                                 if (!off_value || *off_value != 0.0) return fail("'1 - 1' did not become false: " + off);
+                                 if (!on_value || *on_value != 1.0) return fail("'true' did not become true");
+                                 if (rejected.find("cannot read") == std::string::npos) return fail("'banana' as bool was not rejected: " + rejected);
+                                 return pass("SetActorHiddenInGame(bool bNewHidden) found by name; '1 - 1' -> false, 'true' -> true, 'banana' rejected");
+                             }});
+
             steps.push_back({"microbench (informational)", 600, [](int) {
                                  using clock = std::chrono::steady_clock;
                                  auto& adapter = AdapterRegistry::Get();

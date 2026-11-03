@@ -470,8 +470,23 @@ namespace RC::Toolkit
                 for (const auto& [pname, pvalue] : params)
                 {
                     const std::wstring wname = ensure_str(pname);
-                    if (!call.has_param(wname.c_str())) { status = "function '" + fn_name + "' has no parameter '" + pname + "'"; ok = false; continue; }
-                    call.SetText(wname.c_str(), ensure_str(expand_text(pvalue, value, &action)));
+                    FProperty* param = call.ParamProperty(wname.c_str());
+                    void* data = call.ParamData(wname.c_str());
+                    if (!param || !data) { status = "function '" + fn_name + "' has no parameter '" + pname + "'"; ok = false; continue; }
+                    // The parameter's declared type decides how the text is read: numbers and bools (also "{value} * 2"),
+                    // enum names, strings, object paths and struct text each go through their own conversion.
+                    const std::string text = expand_text(pvalue, value, &action);
+                    bool stored = false;
+                    if (Reflect::IsNumeric(param))
+                    {
+                        if (auto number = evaluate_expression(text)) stored = Reflect::SetNumber(param, data, *number);
+                    }
+                    if (!stored) stored = Reflect::ImportText(param, data, ensure_str(text), obj);
+                    if (!stored)
+                    {
+                        status = "parameter '" + pname + "' of '" + fn_name + "' is " + to_string(Reflect::TypeName(param)) + "; cannot read '" + text + "' as that";
+                        ok = false;
+                    }
                 }
                 if (!call.Invoke()) { status = "calling '" + fn_name + "' failed"; ok = false; }
             }

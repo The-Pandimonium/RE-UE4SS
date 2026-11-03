@@ -54,6 +54,16 @@ Slider bounds are `min`/`max`/`default_value` or, to compute them from the game,
 placeholder does. The Trainer tab's **Refresh values** button re-reads everything so sliders show up-to-date bounds,
 defaults and a "now" readout. Moving a slider while its cheat is already on updates the game immediately.
 
+### Function parameters
+
+`call_function` parameters are not invented by hand. Like the blueprint stub generator, the creator reads the function's own
+signature from the live object (every `CPF_Parm` property: inputs become editable rows, out/return values are listed under
+"returns"), so you only fill in values for names that really exist. Each value is converted to the parameter's declared type
+when the function is called: `bool` (`true`/`false`/`1`/`0`), integers and floats (arithmetic such as `{value} * 2`), enum
+entries by name (`DORM_Awake`) or number, strings/names, object paths, and struct text. Leaving a field empty keeps the engine
+default. A value that cannot be read as the declared type is reported on the cheat instead of silently becoming zero. Entries
+in an older file that no longer match the function are flagged and can be removed.
+
 ## In-game waypoint markers
 
 Visible waypoints are shown as **marker actors**: a beam and a ball built from `/Engine/BasicShapes`, no collision, created
